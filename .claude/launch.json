@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "demo", "runtimeExecutable": "python", "runtimeArgs": ["app.py"], "port": 7860 }
+  ]
+}
