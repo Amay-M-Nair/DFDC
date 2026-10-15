@@ -35,6 +35,8 @@ def train_transform():
         RandomJPEG(),
         transforms.ToTensor(),
         transforms.Normalize(MEAN, STD),
+        # Hide a random patch so the model can't rely on a single facial region (reduces overfitting)
+        transforms.RandomErasing(p=0.3, scale=(0.02, 0.15)),
     ])
 
 
