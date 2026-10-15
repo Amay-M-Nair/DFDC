@@ -1,3 +1,4 @@
+import numpy as np
 import timm
 import torch
 import torch.nn as nn
@@ -24,4 +25,13 @@ def load_model(checkpoint, device="cpu") -> DeepfakeClassifier:
     ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
     model = DeepfakeClassifier(backbone=ckpt.get("backbone", "efficientnet_b0"), pretrained=False)
     model.load_state_dict(ckpt["model"])
+    model.threshold = float(ckpt.get("threshold", 0.5))  # decision threshold tuned on validation
     return model.to(device).eval()
+
+
+def best_threshold(labels, probs) -> float:
+    """Threshold maximising Youden's J (TPR - FPR) = best balanced accuracy on this data."""
+    from sklearn.metrics import roc_curve
+
+    fpr, tpr, thr = roc_curve(labels, probs)
+    return float(np.clip(thr[np.argmax(tpr - fpr)], 1e-6, 1 - 1e-6))

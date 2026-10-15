@@ -113,7 +113,7 @@ class Explainer:
         x = self.transform(image).unsqueeze(0).to(self.device)
         with torch.no_grad():
             prob = torch.sigmoid(self.model(x)).item()
-        label = "fake" if prob >= 0.5 else "real"
+        label = "fake" if prob >= self.model.threshold else "real"
         heatmap = self.cam(input_tensor=x, targets=[LogitTarget(1.0 if label == "fake" else -1.0)])[0]
         rgb = np.asarray(image.resize((IMG_SIZE, IMG_SIZE)), dtype=np.float32) / 255.0
         overlay = show_cam_on_image(rgb, heatmap, use_rgb=True)

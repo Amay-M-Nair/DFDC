@@ -12,7 +12,7 @@ from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
 
 from src.classifier.dataset import make_loader
-from src.classifier.model import DeepfakeClassifier
+from src.classifier.model import DeepfakeClassifier, best_threshold
 from src.config import CHECKPOINT
 
 
@@ -36,6 +36,7 @@ def main():
     ap.add_argument("--subset", type=int, default=None)
     ap.add_argument("--patience", type=int, default=3)
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--weight-decay", type=float, default=0.05)
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -44,7 +45,7 @@ def main():
                          subset=args.subset // 4 if args.subset else None)
 
     model = DeepfakeClassifier().to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=args.epochs * len(train_dl),
                                                 pct_start=0.1)
     scaler = torch.amp.GradScaler(enabled=device.type == "cuda")
@@ -71,13 +72,17 @@ def main():
         probs, labels = predict(model, val_dl, device)
         auc = roc_auc_score(labels, probs)
         acc = float(((probs > 0.5) == labels).mean())
-        history.append({"epoch": epoch, "train_loss": running / len(train_dl), "val_auc": auc, "val_acc": acc})
-        print(f"epoch {epoch}: train_loss={running / len(train_dl):.4f} val_auc={auc:.4f} val_acc={acc:.4f}")
+        thr = best_threshold(labels, probs)
+        acc_tuned = float(((probs > thr) == labels).mean())
+        history.append({"epoch": epoch, "train_loss": running / len(train_dl), "val_auc": auc, "val_acc": acc,
+                        "val_acc_tuned": acc_tuned, "threshold": thr})
+        print(f"epoch {epoch}: train_loss={running / len(train_dl):.4f} val_auc={auc:.4f} val_acc={acc:.4f} "
+              f"val_acc@{thr:.3f}={acc_tuned:.4f}")
 
         if auc > best_auc:
             best_auc, bad_epochs = auc, 0
             torch.save({"model": model.state_dict(), "backbone": "efficientnet_b0", "epoch": epoch,
-                        "val_auc": auc}, CHECKPOINT)
+                        "val_auc": auc, "threshold": thr}, CHECKPOINT)
             print(f"  saved best -> {CHECKPOINT}")
         else:
             bad_epochs += 1

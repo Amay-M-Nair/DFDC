@@ -15,12 +15,12 @@ from sklearn.metrics import (ConfusionMatrixDisplay, accuracy_score, confusion_m
                              roc_auc_score, roc_curve)
 
 from src.classifier.dataset import make_loader
-from src.classifier.model import load_model
+from src.classifier.model import best_threshold, load_model
 from src.classifier.train import predict
 from src.config import CHECKPOINT, CLASSES, OUTPUT_DIR
 
 
-def breakdown(names, probs, labels) -> dict:
+def breakdown(names, probs, labels, thr: float = 0.5) -> dict:
     """FaceForensics++ extras (files named method__video__frame.jpg): per-method and video-level scores."""
     if not names or "__" not in names[0]:
         return {}
@@ -30,14 +30,14 @@ def breakdown(names, probs, labels) -> dict:
     per_method = {}
     for m in sorted(set(methods) - {"original"}):
         sel = real | (methods == m)  # each manipulation vs. all real frames
-        per_method[m] = {"acc_on_fakes": float(((probs[methods == m] > 0.5) == 1).mean()),
+        per_method[m] = {"acc_on_fakes": float((probs[methods == m] > thr).mean()),
                          "auc_vs_real": float(roc_auc_score(labels[sel], probs[sel]))}
     # Video-level: average the frame probabilities of each video
     vids = sorted(set(videos))
     v_prob = np.array([probs[videos == v].mean() for v in vids])
     v_label = np.array([labels[videos == v][0] for v in vids])
     return {"per_method": per_method,
-            "video_level": {"n_videos": len(vids), "accuracy": float(((v_prob > 0.5) == v_label).mean()),
+            "video_level": {"n_videos": len(vids), "accuracy": float(((v_prob > thr) == v_label).mean()),
                             "roc_auc": float(roc_auc_score(v_label, v_prob))}}
 
 
@@ -51,12 +51,19 @@ def main():
     model = load_model(CHECKPOINT, device)
     loader = make_loader(args.split, 64, num_workers=args.workers)
     probs, labels = predict(model, loader, device)
-    preds = (probs > 0.5).astype(int)
+
+    # Decision threshold is tuned on validation (never on test). Older checkpoints don't store one.
+    thr = model.threshold
+    if "threshold" not in torch.load(CHECKPOINT, map_location="cpu", weights_only=False):
+        v_probs, v_labels = predict(model, make_loader("val", 64, num_workers=args.workers), device)
+        thr = best_threshold(v_labels, v_probs)
+    preds = (probs > thr).astype(int)
 
     p, r, f1, _ = precision_recall_fscore_support(labels, preds, average="binary")
     metrics = {"accuracy": accuracy_score(labels, preds), "precision": p, "recall": r, "f1": f1,
-               "roc_auc": roc_auc_score(labels, probs), "n": int(len(labels))}
-    metrics.update(breakdown([Path(p).name for p, _ in loader.dataset.samples], probs, labels))
+               "roc_auc": roc_auc_score(labels, probs), "n": int(len(labels)),
+               "threshold": thr, "accuracy_at_0.5": float(((probs > 0.5) == labels).mean())}
+    metrics.update(breakdown([Path(p).name for p, _ in loader.dataset.samples], probs, labels, thr))
     out = OUTPUT_DIR / "metrics"
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{args.split}_metrics.json").write_text(json.dumps(metrics, indent=2))
