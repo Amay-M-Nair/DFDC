@@ -13,6 +13,7 @@ BASELINES = {
     "efficientnet_b0": "EfficientNet-B0 (ours)",
     "efficientnet_b4": "EfficientNet-B4",
     "vit_small_patch16_224": "ViT-S/16",
+    "convnext_tiny": "ConvNeXt-T",
 }
 
 

@@ -51,6 +51,7 @@ schedule and early stopping; each model's decision threshold is tuned on FF++ va
 | `resnet50` | ResNet-50 |
 | `efficientnet_b4` | EfficientNet-B4 |
 | `vit_small_patch16_224` | ViT-S/16 |
+| `convnext_tiny` | ConvNeXt-T (modern CNN) |
 
 ```bash
 python -m src.classifier.train --backbone legacy_xception --epochs 8     # -> outputs/checkpoints/legacy_xception/
@@ -113,7 +114,7 @@ then **Add Input → Your Work → Notebooks**).
 | `02_train` | 01 | GPU T4 | all models' checkpoints + training curves |
 | `03_evaluate` | 01, 01b, 02 (+ copies of 02) | GPU T4 | comparison tables, significance tests, figures |
 
-Training all six models takes roughly 6–7 GPU-hours. Kaggle stops sessions at 12 h, so `02_train` skips models
+Training all seven models takes roughly 7–8 GPU-hours. Kaggle stops sessions at 12 h, so `02_train` skips models
 that would not fit; to be safe, run two copies of it with the model list split between them. `03_evaluate` collects
 checkpoints from every attached copy.
 
