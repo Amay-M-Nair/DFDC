@@ -21,15 +21,38 @@ def find(pattern: str, max_depth: int = 6):
     return None
 
 
+def find_all(pattern: str, max_depth: int = 6):
+    """Every match for `pattern` under /kaggle/input up to `max_depth` folders deep."""
+    hits = []
+    for depth in range(max_depth + 1):
+        hits += glob.glob(os.path.join(INPUT, *(["*"] * depth), pattern))
+    return sorted(Path(h) for h in set(hits))
+
+
+def find_datasets() -> dict:
+    """Face-crop folders attached as inputs: {'FF++': path, 'CelebDF': path} (by the methods in manifest.csv)."""
+    found = {}
+    for manifest in find_all("manifest.csv"):
+        with open(manifest) as f:
+            methods = {line.split(",")[2] for line in list(f)[1:] if line.count(",") >= 5}
+        found.setdefault("CelebDF" if "CelebDF" in methods else "FF++", manifest.parent)
+    return found
+
+
+def checkpoint_roots() -> list:
+    """Every 'checkpoints' folder from attached training notebooks."""
+    return [p for p in find_all("checkpoints", max_depth=4) if p.is_dir()]
+
+
 def setup(data: bool = True, checkpoint: bool = False, data_dir: str = None):
     os.environ.setdefault("DFD_OUTPUT_DIR", str(WORKING / "outputs"))
     if data_dir:
         os.environ["DFD_DATA_DIR"] = data_dir
     elif data:
-        manifest = find("manifest.csv")
-        if manifest is None:
-            raise FileNotFoundError("Face crops not found: add the output of 01_extract_faces as an input.")
-        os.environ["DFD_DATA_DIR"] = str(manifest.parent)
+        ffpp = find_datasets().get("FF++")
+        if ffpp is None:
+            raise FileNotFoundError("FF++ face crops not found: add the output of 01_extract_faces as an input.")
+        os.environ["DFD_DATA_DIR"] = str(ffpp)
     if checkpoint:
         ckpt = find(os.path.join("checkpoints", "best.pt"))
         if ckpt is None:
