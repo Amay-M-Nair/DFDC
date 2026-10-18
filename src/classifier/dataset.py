@@ -1,5 +1,6 @@
 import io
 import random
+from pathlib import Path
 
 from PIL import Image
 from torch.utils.data import DataLoader
@@ -48,25 +49,26 @@ def eval_transform():
     ])
 
 
-def split_dir(split: str):
-    """Resolve a split folder, accepting 'val' or 'valid' (the 140k-faces naming)."""
+def split_dir(split: str, root=None):
+    """Resolve a split folder under `root` (default DATA_DIR), accepting 'val' or 'valid'."""
+    root = Path(root) if root else DATA_DIR
     aliases = {"val": ("val", "valid"), "valid": ("valid", "val")}.get(split, (split,))
     for name in aliases:
-        if (DATA_DIR / name).is_dir():
-            return DATA_DIR / name
-    raise FileNotFoundError(f"No '{split}' folder under {DATA_DIR}")
+        if (root / name).is_dir():
+            return root / name
+    raise FileNotFoundError(f"No '{split}' folder under {root}")
 
 
-def make_dataset(split: str, train: bool = False):
-    ds = datasets.ImageFolder(split_dir(split), transform=train_transform() if train else eval_transform())
+def make_dataset(split: str, train: bool = False, root=None):
+    ds = datasets.ImageFolder(split_dir(split, root), transform=train_transform() if train else eval_transform())
     # ImageFolder sorts classes alphabetically: fake=0, real=1. Flip so fake=1.
     assert ds.class_to_idx == {"fake": 0, "real": 1}, ds.class_to_idx
     ds.target_transform = flip_label
     return ds
 
 
-def make_loader(split, batch_size=32, train=False, num_workers=4, subset=None):
-    ds = make_dataset(split, train)
+def make_loader(split, batch_size=32, train=False, num_workers=4, subset=None, root=None):
+    ds = make_dataset(split, train, root)
     if subset:
         ds.samples = random.Random(0).sample(ds.samples, min(subset, len(ds.samples)))
         ds.imgs = ds.samples
