@@ -19,6 +19,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from src.classifier.ff_extract import _init_worker, extract_video
+from src.faces import ensure_yunet
 
 REAL_DIRS = {"celeb-real", "youtube-real"}
 FAKE_DIR = "celeb-synthesis"
@@ -78,6 +79,7 @@ def main():
     for cls in ("real", "fake"):
         (args.out / "test" / cls).mkdir(parents=True, exist_ok=True)
 
+    ensure_yunet()  # download once, before the workers start
     rows = []
     with Pool(args.workers, initializer=_init_worker) as pool:
         for r in tqdm(pool.imap_unordered(extract_video, jobs), total=len(jobs), desc="videos"):

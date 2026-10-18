@@ -26,6 +26,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from src.config import DATA_DIR
+from src.faces import ensure_yunet
 
 FAKE_METHODS = ("Deepfakes", "Face2Face", "FaceSwap", "NeuralTextures", "FaceShifter")
 REAL_MARKERS = ("original_sequences", "original", "youtube", "real")
@@ -116,7 +117,7 @@ _cropper = None
 def _init_worker():
     global _cropper
     from src.faces import FaceCropper
-    _cropper = FaceCropper()
+    _cropper = FaceCropper(strict=True)  # YuNet was downloaded by the main process
 
 
 def extract_video(job):
@@ -183,6 +184,7 @@ def main():
         if split:
             jobs.append((p, label, split, real_frames if label == "real" else args.frames, str(args.out)))
 
+    ensure_yunet()  # download once, before the workers start
     rows = []
     with Pool(args.workers, initializer=_init_worker) as pool:
         for r in tqdm(pool.imap_unordered(extract_video, jobs), total=len(jobs), desc="videos"):

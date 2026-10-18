@@ -1,9 +1,13 @@
-"""Face detection + square cropping, shared by FaceForensics++ frame extraction and the demo UI.
+"""Face detection + square cropping, shared by FaceForensics++ / Celeb-DF frame extraction and the demo UI.
 
-Uses OpenCV's YuNet detector (downloaded once, ~230 KB) and falls back to the bundled Haar cascade
-if the download is unavailable. Crops are square, centred on the face and enlarged by `scale`, so the
-face sits in the middle of the crop the same way the Grad-CAM++ region grid in src/xai/gradcam.py expects.
+Uses OpenCV's YuNet detector (~230 KB ONNX, downloaded once). Crops are square, centred on the face and
+enlarged by `scale`, so the face sits in the middle of the crop the way the Grad-CAM++ region grid expects.
+
+Dataset extraction calls `ensure_yunet()` once in the main process and then builds croppers with
+`strict=True`, so every frame is cropped by the same detector (a silent fallback would mix detectors).
+The demo UI may fall back to OpenCV's bundled Haar cascade.
 """
+import os
 import urllib.request
 
 import cv2
@@ -12,28 +16,56 @@ from PIL import Image
 
 from src.config import OUTPUT_DIR
 
-YUNET_URL = ("https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
-             "face_detection_yunet_2023mar.onnx")
+YUNET_URLS = (
+    "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+    "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/"
+    "face_detection_yunet_2023mar.onnx",
+)
 YUNET_PATH = OUTPUT_DIR / "models" / "face_detection_yunet_2023mar.onnx"
 
 
-def _load_yunet():
-    try:
-        if not YUNET_PATH.exists():
-            YUNET_PATH.parent.mkdir(parents=True, exist_ok=True)
-            urllib.request.urlretrieve(YUNET_URL, YUNET_PATH)
-        return cv2.FaceDetectorYN.create(str(YUNET_PATH), "", (320, 320), score_threshold=0.7)
-    except Exception as e:
-        print(f"YuNet unavailable ({e}); falling back to Haar cascade")
-        return None
+def _create_yunet(path):
+    return cv2.FaceDetectorYN.create(str(path), "", (320, 320), score_threshold=0.7)
+
+
+def ensure_yunet():
+    """Download YuNet atomically (temp file + rename) and check it loads. Call once, before starting workers."""
+    if YUNET_PATH.exists():
+        try:
+            _create_yunet(YUNET_PATH)
+            return YUNET_PATH
+        except cv2.error:
+            YUNET_PATH.unlink()  # corrupt / partial file from an earlier run
+    YUNET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    errors = []
+    for url in YUNET_URLS:
+        tmp = YUNET_PATH.with_name(f"{YUNET_PATH.stem}.{os.getpid()}.tmp.onnx")  # OpenCV needs the .onnx suffix
+        try:
+            urllib.request.urlretrieve(url, tmp)
+            _create_yunet(tmp)  # raises if it is not a valid ONNX model (e.g. an HTML or Git-LFS pointer page)
+            os.replace(tmp, YUNET_PATH)
+            print(f"YuNet face detector ready ({YUNET_PATH.stat().st_size // 1024} KB)")
+            return YUNET_PATH
+        except Exception as e:
+            errors.append(f"{url}: {e}")
+            tmp.unlink(missing_ok=True)
+    raise RuntimeError("Could not download the YuNet face detector:\n" + "\n".join(errors))
 
 
 class FaceCropper:
-    def __init__(self, scale: float = 1.3, size: int = 256):
+    def __init__(self, scale: float = 1.3, size: int = 256, strict: bool = False):
+        """strict=True: YuNet must already be available (see ensure_yunet); never fall back to Haar."""
         self.scale, self.size = scale, size
-        self.yunet = _load_yunet()
-        self.haar = None if self.yunet else cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        self.yunet, self.haar = None, None
+        try:
+            if not strict:
+                ensure_yunet()
+            self.yunet = _create_yunet(YUNET_PATH)
+        except Exception as e:
+            if strict:
+                raise RuntimeError(f"YuNet face detector failed to load: {e}") from e
+            print(f"YuNet unavailable ({e}); falling back to Haar cascade")
+            self.haar = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
     def detect(self, rgb: np.ndarray):
         """Return the largest face box (x, y, w, h) or None."""
