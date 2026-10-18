@@ -5,7 +5,7 @@ those explanations are grounded or hallucinated.
 
 | Phase | What | Where |
 |---|---|---|
-| 1 | EfficientNet-B0 classifier (PyTorch, timm, AMP) | `src/classifier/` |
+| 1 | EfficientNet-B0 classifier vs. 5 baselines; trained on FF++, tested on FF++ and Celeb-DF | `src/classifier/` |
 | 2 | Grad-CAM++ localisation + facial-region attribution | `src/xai/gradcam.py` |
 | 3 | Ungrounded LLM explanation (Anthropic, OpenRouter or local LLM) | `src/explain/llm.py`, `src/explain/providers.py` |
 | 4 | RAG-grounded explanation over a curated forensic corpus | `corpus/`, `src/explain/retriever.py` |
@@ -34,9 +34,32 @@ Any other dataset already in `data/{train,val,test}/{real,fake}` image folders a
 ## Train and evaluate
 ```bash
 python -m src.classifier.train --epochs 1 --subset 500     # smoke test
-python -m src.classifier.train --epochs 8
+python -m src.classifier.train --epochs 8                   # EfficientNet-B0 (ours) -> outputs/checkpoints/best.pt
 python -m src.classifier.evaluate                          # outputs/metrics/ (+ per-method and video-level AUC for FF++)
 ```
+
+### Model comparison and cross-dataset test
+Protocol: **train on FaceForensics++**, test on the FF++ test split (in-dataset) and on the **Celeb-DF v2 official
+test split** (cross-dataset, never seen in training). All models share the same data, 224px input, augmentation,
+schedule and early stopping; each model's decision threshold is tuned on FF++ validation only.
+
+| `--backbone` | Model |
+|---|---|
+| `efficientnet_b0` | EfficientNet-B0 (ours) |
+| `meso4` | MesoNet-4 (Afchar et al. 2018), trained from scratch |
+| `legacy_xception` | Xception (FaceForensics++ baseline) |
+| `resnet50` | ResNet-50 |
+| `efficientnet_b4` | EfficientNet-B4 |
+| `vit_small_patch16_224` | ViT-S/16 |
+
+```bash
+python -m src.classifier.train --backbone legacy_xception --epochs 8     # -> outputs/checkpoints/legacy_xception/
+python -m src.classifier.celebdf_extract --src path/to/Celeb-DF-v2 --out data_celebdf
+python -m src.classifier.compare --roots outputs/checkpoints --datasets FF++=data CelebDF=data_celebdf
+```
+`compare` writes `outputs/compare/`: AUC with 95% CIs (bootstrap over videos), accuracy/F1, video-level AUC,
+per-method AUC, params/GFLOPs/throughput/training time, paired significance tests vs. EfficientNet-B0, and figures
+(ROC, accuracy vs. compute, in-dataset vs. cross-dataset AUC).
 
 ## Explain one image
 ```bash
@@ -77,32 +100,33 @@ python app.py     # http://localhost:7860
 ```
 
 ## Running on Kaggle
-The `kaggle/` notebooks run the whole system one phase at a time. Each notebook's saved output is added as an
-input to the next one (**Save Version → Save & Run All**, then **Add Input → Your Work**).
+Current phase: **model training and evaluation** (notebooks 01–03). Grad-CAM++, LLM/RAG explanations and the demo
+are parked in `kaggle/later/` until this phase is finalised.
+
+Each notebook's saved output is added as an input to the next one (**Save Version → Save & Run All (Commit)**,
+then **Add Input → Your Work → Notebooks**).
 
 | Notebook | Inputs | Accelerator | Produces |
 |---|---|---|---|
-| `01_extract_faces` | FF++ video dataset | None (CPU) | face crops + `manifest.csv` |
-| `02_train` | 01 | GPU T4 | `checkpoints/best.pt`, training curves |
-| `03_evaluate` | 01, 02 | GPU T4 | metrics, ROC, per-method AUC, worst mistakes |
-| `04_gradcam` | 01, 02 | GPU T4 | heatmap examples, region attribution per method |
-| `05_explanations` | 01, 02 + LLM key | GPU T4 | side-by-side grounded vs. ungrounded examples |
-| `06_faithfulness_eval` | 01, 02 + LLM key | GPU T4 | IoU / hallucination rates + significance tests |
-| `07_demo` | 02 | GPU T4 | public `gradio.live` demo link |
+| `01_extract_faces` | FF++ video dataset | None (CPU) | FF++ face crops (train/val/test) |
+| `01b_extract_celebdf` | Celeb-DF v2 video dataset | None (CPU) | Celeb-DF official test-set face crops |
+| `02_train` | 01 | GPU T4 | all models' checkpoints + training curves |
+| `03_evaluate` | 01, 01b, 02 (+ copies of 02) | GPU T4 | comparison tables, significance tests, figures |
 
-`00_all_in_one` runs every phase in a single session instead.
+Training all six models takes roughly 6–7 GPU-hours. Kaggle stops sessions at 12 h, so `02_train` skips models
+that would not fit; to be safe, run two copies of it with the model list split between them. `03_evaluate` collects
+checkpoints from every attached copy.
 
-Every notebook needs **Internet on**. The project code comes from the repo (`backup` branch). If the repo is
+Every notebook needs **Internet on**. The project code is cloned from the repo (`dev` branch). If the repo is
 private, add a `GITHUB_TOKEN` secret, or upload a zip of the project as a Kaggle dataset and attach it.
-In notebooks 05–07, set `LLM_PROVIDER` / `LLM_MODEL` in the first cell. API keys come from **Add-ons → Secrets**.
-With `LLM_PROVIDER = "ollama"` the notebook installs Ollama and runs the model inside the Kaggle session, so no key is needed. Use a T4, not a P100 (recent PyTorch builds no longer support it).
+Use a T4, not a P100 (recent PyTorch builds no longer support it).
 
 ## Layout
 ```
 src/classifier/  model, FF++ frame extraction, dataset, training, evaluation
 src/faces.py     face detection + cropping (extraction and UI)
 src/kaggle_utils.py  locate earlier notebooks' outputs on Kaggle
-kaggle/          Kaggle notebooks, one per phase
+kaggle/          Kaggle notebooks for the current phase (kaggle/later/: parked phases)
 src/xai/         Grad-CAM++
 src/explain/     corpus loader, retriever, LLM providers + explainer
 src/eval/        metrics + evaluation runner
