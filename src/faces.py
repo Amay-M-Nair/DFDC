@@ -80,6 +80,21 @@ class FaceCropper:
             return None
         return max(boxes, key=lambda b: b[2] * b[3])
 
+    def landmarks(self, rgb: np.ndarray):
+        """Largest face as (box (x, y, w, h), 5x2 points: two eyes, nose tip, two mouth corners), or None.
+
+        Needs YuNet (the Haar fallback has no landmarks). Coordinates are in pixels of `rgb`.
+        """
+        if self.yunet is None:
+            return None
+        h, w = rgb.shape[:2]
+        self.yunet.setInputSize((w, h))
+        _, faces = self.yunet.detect(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        if faces is None or len(faces) == 0:
+            return None
+        f = max(faces, key=lambda r: r[2] * r[3])
+        return f[:4], f[4:14].reshape(5, 2)
+
     def crop(self, rgb: np.ndarray):
         """Square face crop resized to `size`, or None if no face is found."""
         box = self.detect(rgb)
