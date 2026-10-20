@@ -17,6 +17,7 @@ import argparse
 import csv
 import json
 import random
+import re
 from collections import defaultdict
 from multiprocessing import Pool
 from pathlib import Path
@@ -76,8 +77,19 @@ class UnionFind:
         self.parent[self.find(a)] = self.find(b)
 
 
+FF_NAME = re.compile(r"^\d{3}(_\d{3})?$")  # real "000", fake "000_003" (target_source)
+
+
 def ids_of(path: Path):
     return path.stem.split("_")[:2]
+
+
+def check_names(videos):
+    """The identity split relies on FF++ file names; refuse to run if a mirror renamed them."""
+    bad = [p.name for p, _ in videos if not FF_NAME.match(p.stem)]
+    if bad:
+        raise SystemExit(f"{len(bad)} videos don't follow FF++ naming (000.mp4 / 000_003.mp4), e.g. {bad[:5]}. "
+                         "The identity-level split can't be trusted for this dataset layout.")
 
 
 def assign_splits(videos, splits_dir=None, ratios=(0.72, 0.14, 0.14), seed=0):
@@ -171,6 +183,7 @@ def main():
     if "real" not in by_label or len(by_label) < 2:
         raise SystemExit(f"Need real and fake videos under {args.src}; found {sorted(by_label)}")
 
+    check_names(videos)
     n_fake_methods = len(by_label) - 1
     real_frames = args.real_frames or min(args.frames * n_fake_methods, 100)
     id_split = assign_splits(videos, args.splits)
