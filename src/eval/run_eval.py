@@ -44,8 +44,8 @@ def main():
             if out.error:
                 row["error"] = out.error
             else:
-                row.update(iou=round(faithfulness_iou(out.claimed_region, exp.heatmap), 4),
-                           pointing_hit=pointing_hit(out.claimed_region, exp.heatmap),
+                row.update(iou=round(faithfulness_iou(out.claimed_region, exp.heatmap, regions=exp.regions), 4),
+                           pointing_hit=pointing_hit(out.claimed_region, exp.heatmap, regions=exp.regions),
                            **hallucination_flags(out, exp))
             rows.append(row)
 

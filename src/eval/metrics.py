@@ -2,33 +2,23 @@
 import numpy as np
 
 from src.explain.corpus import artifact_taxonomy, load_corpus
-from src.xai.gradcam import BACKGROUND, FACE_REGIONS, heatmap_mask
+from src.xai.gradcam import heatmap_mask, region_mask
 
 
-def region_mask(region: str, shape) -> np.ndarray:
-    h, w = shape
-    mask = np.zeros(shape, dtype=bool)
-    if region in FACE_REGIONS:
-        x0, y0, x1, y1 = FACE_REGIONS[region]
-        mask[int(y0 * h):int(y1 * h), int(x0 * w):int(x1 * w)] = True
-    elif region == BACKGROUND:
-        mask[:] = True
-        for name in FACE_REGIONS:
-            mask &= ~region_mask(name, shape)
-    return mask
+def faithfulness_iou(claimed_region: str, heatmap: np.ndarray, quantile: float = 0.8, regions: dict = None) -> float:
+    """IoU between the region the explanation talks about and the top-(1-q) Grad-CAM++ pixels.
 
-
-def faithfulness_iou(claimed_region: str, heatmap: np.ndarray, quantile: float = 0.8) -> float:
-    """IoU between the region the explanation talks about and the top-(1-q) Grad-CAM++ pixels."""
-    a, b = region_mask(claimed_region, heatmap.shape), heatmap_mask(heatmap, quantile)
+    `regions`: the face's own region boxes (Explanation.regions); default = fixed grid.
+    """
+    a, b = region_mask(claimed_region, heatmap.shape, regions), heatmap_mask(heatmap, quantile)
     union = (a | b).sum()
     return float((a & b).sum() / union) if union else 0.0
 
 
-def pointing_hit(claimed_region: str, heatmap: np.ndarray) -> bool:
+def pointing_hit(claimed_region: str, heatmap: np.ndarray, regions: dict = None) -> bool:
     """Does the claimed region contain the heatmap peak? (pointing-game metric)"""
     peak = np.unravel_index(np.argmax(heatmap), heatmap.shape)
-    return bool(region_mask(claimed_region, heatmap.shape)[peak])
+    return bool(region_mask(claimed_region, heatmap.shape, regions)[peak])
 
 
 def hallucination_flags(llm, exp, k: int = 3) -> dict:

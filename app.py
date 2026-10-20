@@ -27,7 +27,7 @@ def render(out, exp) -> str:
     refs = "\n".join(f"- `[{c}]` {CITATIONS.get(c, 'unknown source')}" for c in out.citations)
     return (f"**Region:** {out.claimed_region}  \n**Artifact:** `{out.artifact_type}`\n\n{out.explanation}\n\n"
             + (f"**Sources**\n{refs}\n\n" if refs else "")
-            + f"<sub>Faithfulness IoU {faithfulness_iou(out.claimed_region, exp.heatmap):.2f} · "
+            + f"<sub>Faithfulness IoU {faithfulness_iou(out.claimed_region, exp.heatmap, regions=exp.regions):.2f} · "
               f"hallucination flags: {', '.join(k for k, v in flags.items() if v and k != 'any_hallucination') or 'none'}</sub>")
 
 
