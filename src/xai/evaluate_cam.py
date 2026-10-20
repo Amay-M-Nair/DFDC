@@ -14,13 +14,14 @@ per model, dataset and manipulation method.
 
 The same images (one frame per test video, sampled per manipulation method) are used for every model.
 Writes to outputs/gradcam/: faithfulness.csv, faithfulness_summary.csv, faithfulness_tests.csv,
-curves.csv, regions.csv, region_attribution.csv
+curves.csv, regions.csv, region_attribution.csv, heatmaps_<model>.npz (per-image maps)
 
     python -m src.xai.evaluate_cam --roots outputs/checkpoints --datasets FF++=data CelebDF=data_celebdf --n 300
 """
 import argparse
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pandas as pd
 import torch
@@ -101,17 +102,21 @@ def main():
             rgb8 = np.asarray(img.resize((IMG_SIZE, IMG_SIZE)))
             found = faces.landmarks(rgb8)
             regions = landmark_regions(*found, IMG_SIZE, IMG_SIZE) if found is not None else dict(FACE_REGIONS)
-            images.append({"dataset": name, "file": r.file, "manipulation": r.method, "label": r.label,
-                           "x": transform(img), "regions": regions,
+            images.append({"dataset": name, "file": r.file, "path": r.path, "manipulation": r.method,
+                           "label": r.label, "x": transform(img), "regions": regions,
                            "region_source": "landmarks" if found is not None else "grid"})
     print(f"{len(images)} images; landmarks found for {sum(i['region_source'] == 'landmarks' for i in images)}")
 
+    out = OUTPUT_DIR / "gradcam"
+    out.mkdir(parents=True, exist_ok=True)
     rows, curve_rows, region_rows = [], [], []
     for backbone, path in ckpts.items():
         model = load_model(path, device)
         cams = {m: METHODS[m](model=model, target_layers=[model.target_layer], reshape_transform=model.cam_reshape)
                 for m in args.methods if m in METHODS}
         name = BASELINES.get(backbone, backbone)
+        # Per-image maps (56x56, float16) for the per-model profiles in notebook 04
+        saved = {"prob": [], "pred": [], **{m: [] for m in cams}}
         for k, im in enumerate(tqdm(images, desc=name)):
             x = im["x"].unsqueeze(0).to(device)
             blurred = gaussian_blur(x, kernel_size=31, sigma=10.0)
@@ -119,17 +124,20 @@ def main():
                 prob = torch.sigmoid(model(x)).item()
             pred = "fake" if prob >= model.threshold else "real"
             sign = 1.0 if pred == "fake" else -1.0
+            saved["prob"].append(prob)
+            saved["pred"].append(pred)
             for method in args.methods:
                 if method == "random":
                     heat = random_map(k)
                 else:
                     heat = cams[method](input_tensor=x, targets=[LogitTarget(sign)])[0]
+                    saved[method].append(cv2.resize(heat, (56, 56), interpolation=cv2.INTER_AREA).astype(np.float16))
                     if heat.max() <= 1e-8:  # no positive evidence: nothing to attribute or rank
                         rows.append({"model": name, "dataset": im["dataset"], "file": im["file"], "cam": method,
                                      "label": im["label"], "pred": pred, "correct": pred == im["label"], "empty_cam": True})
                         continue
                     shares = region_scores(heat, im["regions"])
-                    region_rows.append({"model": name, "dataset": im["dataset"], "manipulation": im["manipulation"],
+                    region_rows.append({"model": name, "dataset": im["dataset"], "file": im["file"], "manipulation": im["manipulation"],
                                         "label": im["label"], "correct": pred == im["label"], "cam": method,
                                         "region_source": im["region_source"], **shares})
                 d, i = curves(model, x, blurred, heat, sign)
@@ -139,11 +147,16 @@ def main():
                              "insertion_auc": float(trapezoid(i, FRACTIONS)), "empty_cam": False})
                 curve_rows += [{"model": name, "dataset": im["dataset"], "cam": method, "fraction": f,
                                 "deletion": dv, "insertion": iv} for f, dv, iv in zip(FRACTIONS, d, i)]
+        np.savez_compressed(
+            out / f"heatmaps_{backbone}.npz", model=name, backbone=backbone,
+            threshold=model.threshold, target_layer=type(model.target_layer).__name__,
+            dataset=[i["dataset"] for i in images], files=[i["file"] for i in images],
+            path=[i["path"] for i in images], manipulation=[i["manipulation"] for i in images],
+            label=[i["label"] for i in images], prob=np.array(saved.pop("prob")), pred=saved.pop("pred"),
+            **{f"cam_{m.replace('+', 'p')}": np.stack(v) for m, v in saved.items()})
         del model, cams
         torch.cuda.empty_cache()
 
-    out = OUTPUT_DIR / "gradcam"
-    out.mkdir(parents=True, exist_ok=True)
     res = pd.DataFrame(rows)
     res.to_csv(out / "faithfulness.csv", index=False)
     empty = res[res.empty_cam].groupby(["model", "cam"]).size()
