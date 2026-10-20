@@ -54,16 +54,35 @@ class DeepfakeClassifier(nn.Module):
         return self.head(self.backbone(x))
 
     @property
+    def is_vit(self) -> bool:
+        return hasattr(self.backbone, "blocks") and hasattr(self.backbone, "patch_embed")
+
+    @property
     def target_layer(self) -> nn.Module:
-        """Last convolutional block — the layer Grad-CAM++ hooks into."""
+        """Layer Grad-CAM hooks into: the last convolutional block, or for ViT the last block's first norm."""
         b = self.backbone
-        for attr in ("conv_head", "layer4", "conv4", "act4", "stages"):  # EfficientNet, ResNet, Meso/Xception, ConvNeXt
+        if self.is_vit:
+            return b.blocks[-1].norm1
+        # EfficientNet, ResNet, Xception (activated output), MesoNet, ConvNeXt
+        for attr in ("conv_head", "layer4", "act4", "conv4", "stages"):
             if hasattr(b, attr):
                 layer = getattr(b, attr)
                 return layer[-1] if attr == "stages" else layer
-        if "vit" in self.backbone_name or "swin" in self.backbone_name:
-            raise NotImplementedError("Grad-CAM++ is only wired up for CNN backbones")
         return [m for m in b.modules() if isinstance(m, nn.Conv2d)][-1]
+
+    @property
+    def cam_reshape(self):
+        """For ViT: turn the token sequence (B, prefix + H*W, C) into a (B, C, H, W) map; None for CNNs."""
+        if not self.is_vit:
+            return None
+        prefix = getattr(self.backbone, "num_prefix_tokens", 1)
+
+        def reshape(tokens):
+            t = tokens[:, prefix:, :]
+            side = int(t.shape[1] ** 0.5)
+            return t.reshape(t.shape[0], side, side, t.shape[2]).permute(0, 3, 1, 2)
+
+        return reshape
 
 
 def checkpoint_path(backbone: str):
