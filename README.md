@@ -59,7 +59,7 @@ python -m src.classifier.celebdf_extract --src path/to/Celeb-DF-v2 --out data_ce
 python -m src.classifier.compare --roots outputs/checkpoints --datasets FF++=data CelebDF=data_celebdf
 ```
 `compare` writes `outputs/compare/`: AUC with 95% CIs (bootstrap over videos), accuracy/F1, video-level AUC,
-per-method AUC, params/GFLOPs/throughput/training time, paired significance tests vs. EfficientNet-B0, and figures
+per-method AUC, params/GFLOPs/throughput/training time, paired significance tests for every pair of models, and figures
 (ROC, accuracy vs. compute, in-dataset vs. cross-dataset AUC).
 
 ## Explain one image

@@ -5,7 +5,7 @@ Finds every best.pt under --roots and evaluates each model on the test split of 
     summary.csv                      one row per model: cost + AUC (95% CI) on every dataset
     <dataset>/comparison.csv         AUC, accuracy, F1, video AUC
     <dataset>/per_method.csv         AUC per manipulation method
-    <dataset>/significance.csv       paired AUC difference vs. the reference model (95% CI, p-value)
+    <dataset>/significance.csv       paired AUC difference for every pair of models (95% CI, p-value)
     <dataset>/predictions.csv        per-frame P(fake) of every model
     *.png                            ROC curves, AUC vs. compute, per-method bars, generalisation bars
 
@@ -117,16 +117,18 @@ def evaluate_dataset(ds: TestSet, thresholds, reference, n_boot, out: Path):
                      "threshold": thresholds[backbone]})
         per_method[name] = {m: roc_auc_score(labels[real | (ds.methods == m)], probs[real | (ds.methods == m)])
                             for m in sorted(set(ds.methods) - {"original", "unknown"})}
-    sig = []
+    # Every pair of models (none favoured), or only pairs with --reference when one is given
+    names = list(ds.probs)
+    pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1:]]
     if reference in ds.probs:
-        for b in ds.probs:
-            if b == reference:
-                continue
-            diff = boot_aucs[reference] - boot_aucs[b]
-            sig.append({"reference": reference, "vs": b,
-                        "auc_diff": roc_auc_score(labels, ds.probs[reference]) - roc_auc_score(labels, ds.probs[b]),
-                        "ci_low": np.percentile(diff, 2.5), "ci_high": np.percentile(diff, 97.5),
-                        "p_value": min(1.0, 2 * min((diff <= 0).mean(), (diff >= 0).mean()))})
+        pairs = [(reference, b) for b in names if b != reference]
+    sig = []
+    for a, b in pairs:
+        diff = boot_aucs[a] - boot_aucs[b]
+        sig.append({"model_a": BASELINES.get(a, a), "model_b": BASELINES.get(b, b),
+                    "auc_diff_a_minus_b": roc_auc_score(labels, ds.probs[a]) - roc_auc_score(labels, ds.probs[b]),
+                    "ci_low": np.percentile(diff, 2.5), "ci_high": np.percentile(diff, 97.5),
+                    "p_value": min(1.0, 2 * min((diff <= 0).mean(), (diff >= 0).mean()))})
 
     table = pd.DataFrame(rows).sort_values("auc", ascending=False)
     table.to_csv(out / "comparison.csv", index=False)
@@ -139,12 +141,12 @@ def evaluate_dataset(ds: TestSet, thresholds, reference, n_boot, out: Path):
     print(table.drop(columns="backbone").round(4).to_string(index=False))
     print("\nAUC per manipulation\n", pm.round(4).to_string())
     if sig:
-        print(f"\nPaired bootstrap vs {reference}\n", pd.DataFrame(sig).round(4).to_string(index=False))
+        print("\nPaired bootstrap (AUC difference a - b)\n", pd.DataFrame(sig).round(4).to_string(index=False))
 
     plt.figure(figsize=(5.5, 5))
     for r in table.itertuples():
         fpr, tpr, _ = roc_curve(labels, ds.probs[r.backbone])
-        plt.plot(fpr, tpr, label=f"{r.model} ({r.auc:.3f})", lw=2.5 if r.backbone == reference else 1.2)
+        plt.plot(fpr, tpr, label=f"{r.model} ({r.auc:.3f})", lw=1.5)
     plt.plot([0, 1], [0, 1], "--", color="gray")
     plt.xlabel("False positive rate"); plt.ylabel("True positive rate"); plt.title(f"ROC, {ds.name} test")
     plt.legend(fontsize=8)
@@ -162,7 +164,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--roots", nargs="+", default=[str(CHECKPOINT.parent)], help="folders searched for best.pt")
     ap.add_argument("--datasets", nargs="+", default=[f"FF++={DATA_DIR}"], help="name=folder with test/{real,fake}")
-    ap.add_argument("--reference", default=DEFAULT_BACKBONE)
+    ap.add_argument("--reference", default=None, help="only test this model against the others (default: all pairs)")
     ap.add_argument("--bootstrap", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=4)
     args = ap.parse_args()
@@ -207,8 +209,7 @@ def main():
     main_ds = sets[-1].name
     plt.figure(figsize=(6.5, 4.5))
     for b, r in summary.iterrows():
-        plt.scatter(r.gflops, r[f"{main_ds}_auc"], s=40 + 8 * r.params_M, alpha=0.7,
-                    edgecolor="black" if b == args.reference else "none")
+        plt.scatter(r.gflops, r[f"{main_ds}_auc"], s=40 + 8 * r.params_M, alpha=0.7)
         plt.annotate(r.model, (r.gflops, r[f"{main_ds}_auc"]), textcoords="offset points", xytext=(6, 4), fontsize=8)
     plt.xscale("log"); plt.xlabel("GFLOPs per image (log)"); plt.ylabel(f"{main_ds} test AUC")
     plt.title("Accuracy vs. compute (bubble = parameters)")
