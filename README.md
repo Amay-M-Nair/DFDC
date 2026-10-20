@@ -34,7 +34,7 @@ Any other dataset already in `data/{train,val,test}/{real,fake}` image folders a
 ## Train and evaluate
 ```bash
 python -m src.classifier.train --epochs 1 --subset 500     # smoke test
-python -m src.classifier.train --epochs 8                   # EfficientNet-B0 (ours) -> outputs/checkpoints/best.pt
+python -m src.classifier.train --epochs 8                   # EfficientNet-B0 -> outputs/checkpoints/best.pt
 python -m src.classifier.evaluate                          # outputs/metrics/ (+ per-method and video-level AUC for FF++)
 ```
 
@@ -45,7 +45,7 @@ schedule and early stopping; each model's decision threshold is tuned on FF++ va
 
 | `--backbone` | Model |
 |---|---|
-| `efficientnet_b0` | EfficientNet-B0 (ours) |
+| `efficientnet_b0` | EfficientNet-B0 (proposed) |
 | `meso4` | MesoNet-4 (Afchar et al. 2018), trained from scratch |
 | `legacy_xception` | Xception (FaceForensics++ baseline) |
 | `resnet50` | ResNet-50 |

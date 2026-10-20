@@ -10,7 +10,7 @@ BASELINES = {
     "meso4": "MesoNet-4 (Afchar et al., 2018)",
     "legacy_xception": "Xception (FaceForensics++ baseline)",
     "resnet50": "ResNet-50",
-    "efficientnet_b0": "EfficientNet-B0 (ours)",
+    "efficientnet_b0": "EfficientNet-B0",
     "efficientnet_b4": "EfficientNet-B4",
     "vit_small_patch16_224": "ViT-S/16",
     "convnext_tiny": "ConvNeXt-T",
