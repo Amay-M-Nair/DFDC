@@ -64,8 +64,16 @@ per-method AUC, params/GFLOPs/throughput/training time, paired significance test
 
 ## Explain one image
 ```bash
-python -m src.xai.gradcam --image path/to/face.jpg        # outputs/gradcam/
+python -m src.xai.gradcam --image path/to/face.jpg --checkpoint outputs/checkpoints/convnext_tiny/best.pt
 ```
+Facial regions (eyes, nose, mouth, cheeks, forehead, chin) are placed from YuNet's 5 landmarks on each face.
+
+### Heatmap evaluation (all models)
+```bash
+python -m src.xai.evaluate_cam --roots outputs/checkpoints --datasets FF++=data CelebDF=data_celebdf --n 300
+```
+Deletion/insertion faithfulness (Grad-CAM vs. Grad-CAM++ vs. random, paired Wilcoxon tests) and per-region
+attribution for every model and manipulation, in `outputs/gradcam/`.
 
 ## Choosing the LLM
 The explanation step works with Anthropic, OpenRouter, a local model, or any OpenAI-compatible server.
@@ -101,8 +109,8 @@ python app.py     # http://localhost:7860
 ```
 
 ## Running on Kaggle
-Current phase: **model training and evaluation** (notebooks 01–03). Grad-CAM++, LLM/RAG explanations and the demo
-are parked in `kaggle/later/` until this phase is finalised.
+Current phase: **Grad-CAM++ explainability** (notebook 04), after model training and evaluation (01–03).
+LLM/RAG explanations, their evaluation and the demo are parked in `kaggle/later/`.
 
 Each notebook's saved output is added as an input to the next one (**Save Version → Save & Run All (Commit)**,
 then **Add Input → Your Work → Notebooks**).
@@ -113,6 +121,7 @@ then **Add Input → Your Work → Notebooks**).
 | `01b_extract_celebdf` | Celeb-DF v2 video dataset | None (CPU) | Celeb-DF official test-set face crops |
 | `02_train` | 01 | GPU T4 | all models' checkpoints + training curves |
 | `03_evaluate` | 01, 01b, 02 (+ copies of 02) | GPU T4 | comparison tables, significance tests, figures |
+| `04_gradcam` | 01, 01b, 02 (+ copies of 02) | GPU T4 | heatmap gallery, deletion/insertion faithfulness, region attribution |
 
 Training all seven models takes roughly 7–8 GPU-hours. Kaggle stops sessions at 12 h, so `02_train` skips models
 that would not fit; to be safe, run two copies of it with the model list split between them. `03_evaluate` collects
