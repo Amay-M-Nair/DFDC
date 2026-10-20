@@ -6,8 +6,6 @@ import argparse
 import json
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -42,6 +40,7 @@ def breakdown(names, probs, labels, thr: float = 0.5) -> dict:
 
 
 def main():
+    plt.switch_backend("Agg")  # file output only; set here (not at import) so notebooks importing this keep inline plots
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", default="test")
     ap.add_argument("--workers", type=int, default=4)

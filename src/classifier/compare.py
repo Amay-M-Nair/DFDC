@@ -20,8 +20,6 @@ import json
 import time
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -161,6 +159,7 @@ def evaluate_dataset(ds: TestSet, thresholds, reference, n_boot, out: Path):
 
 
 def main():
+    plt.switch_backend("Agg")  # file output only; set here (not at import) so notebooks importing this keep inline plots
     ap = argparse.ArgumentParser()
     ap.add_argument("--roots", nargs="+", default=[str(CHECKPOINT.parent)], help="folders searched for best.pt")
     ap.add_argument("--datasets", nargs="+", default=[f"FF++={DATA_DIR}"], help="name=folder with test/{real,fake}")
