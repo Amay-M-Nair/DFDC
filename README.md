@@ -8,7 +8,7 @@ those explanations are grounded or hallucinated.
 | 1 | EfficientNet-B0 classifier vs. 5 baselines; trained on FF++, tested on FF++ and Celeb-DF | `src/classifier/` |
 | 2 | Grad-CAM++ localisation + facial-region attribution | `src/xai/gradcam.py` |
 | 3 | Ungrounded LLM explanation (GPT-OSS-120B/20B and Qwen3.8-27B on Groq's free tier; other providers also work) | `src/explain/llm.py`, `src/explain/providers.py` |
-| 4 | RAG-grounded explanation over a curated forensic corpus | `corpus/`, `src/explain/retriever.py` |
+| 4 | RAG-grounded explanation: evidence cards, hybrid retrieval, cited answers, verifier | `corpus/`, `src/explain/retriever.py`, `src/eval/verify.py` |
 | 5 | Faithfulness IoU, pointing game, hallucination rate | `src/eval/` |
 | 6 | Local demo UI (Gradio, localhost) | `app.py` |
 
@@ -115,7 +115,8 @@ classifier relied on. Because the labels come from fixed lists, every claim can 
 automatically (phase 5).
 
 Each answer records whether it is valid (`schema_ok`: JSON with allowed labels), the `provider:model`, the
-latency and the raw reply. Phase 4 adds retrieved forensic passages to the same prompt; nothing else changes.
+latency and the raw reply. Phase 4 adds retrieved evidence cards and the instruction to cite them; the evidence
+summary, labels and output schema stay the same.
 
 ### Pilot results (notebook 05)
 48 pilot images (24 FF++, 24 Celeb-DF; one frame per test video), explained by each model with reasoning effort
@@ -152,7 +153,53 @@ explanations describe its verdict, right or wrong.
 The visual-claim, uncertainty and GAN counts come from keyword matching on the explanations, so they are
 approximate; the other rates are computed by notebook 05.
 
-## Grounded vs. ungrounded evaluation
+## Grounded explanations (phase 4)
+Same images, evidence summaries, models and settings as phase 3; the prompt adds **evidence cards** and the
+instruction to use and cite them. A third condition, **verified**, checks each grounded answer and asks once for a
+revision when a check fails.
+
+```
+evidence summary ──► query (fixed template) ──► retriever ──► 4–7 cards ──► LLM (Groq) ──► JSON + citations ──► verifier
+                                                  ▲                                                              │
+                                     corpus/ (35 evidence cards)                         revision request if a check fails
+```
+
+**Evidence cards (`corpus/*.md`).** Each card makes one claim in 1–3 sentences and carries metadata: the artefact
+label it is about, its kind, the facial regions and pattern (central/outer) it applies to, the manipulation
+families it concerns, and its source. Kinds: *artifact* (where an artefact appears; supports that label for its
+regions), *scope* (when an artefact does not apply, e.g. GAN fingerprints are a cue for fully synthetic images,
+not face swaps), *limitation* (what the evidence cannot show, e.g. Grad-CAM shows where, not why) and *authentic*
+(evidence for a REAL verdict). The labels are the same ten as in phase 3, so phase 3's prompt is unchanged; the
+taxonomy (regions per label) is now the union of each label's artifact cards, which removes `nose` from the GAN
+fingerprint label and leaves the others as before. The card format is described in `src/explain/corpus.py`.
+Every card is marked `checked: no` until its claim has been compared with the cited paper.
+
+**Retriever (`src/explain/retriever.py`).**
+1. *Filter* by verdict and regions: FAKE → artifact cards that list one of the heatmap's top-3 regions; REAL →
+   authentic cards.
+2. *Rank* with three rankers fused by reciprocal rank fusion (no weights to tune): region overlap weighted by rank,
+   BM25 keyword match, and cosine similarity of `BAAI/bge-small-en-v1.5` embeddings (run locally with
+   `transformers`; the 35 card embeddings are computed once and kept in memory, no vector database).
+3. *Diversify*: the best card of each of 3 artefact types plus their scope cards (REAL: the best 2 authentic
+   cards), then one limitation card (`lim-generalisation` for moderate or borderline confidence).
+
+The query is filled from the evidence by a fixed template, so retrieval is deterministic. Notebook 06 compares
+the rankers alone and combined, and a plain top-3 without the filter and diversity.
+
+**Verifier (`src/eval/verify.py`).** Deterministic checks against the cards the answer cites (citations provided,
+artefact supported by a cited artifact card, region listed on it), the heatmap checks from phase 3, and
+sentence-level NLI with `cross-encoder/nli-deberta-v3-base`: each sentence must be entailed by the evidence summary
+plus the cited cards. NLI measures attribution, not truth: a correct statement from the model's own knowledge
+counts as unsupported, and hedged interpretations are often judged neutral (on phase 3's answers it marks only
+13–29% of sentences as supported). The verified condition therefore requests a revision on failed deterministic
+checks and on *contradicted* sentences; adding `"neutral"` to `REVISE_ON` makes it stricter. Before quoting NLI
+rates, label the exported sentence sample by hand and compare.
+
+Notebook 06 also scores phase 3's answers with the same checks (with the new taxonomy) and reports agreement
+between models on the artefact type (Fleiss' κ), **method consistency** (the claimed artefact is documented for
+the image's true manipulation family, which the LLM never sees) and the rate of GAN-fingerprint claims.
+
+## Grounded vs. ungrounded evaluation (phase 5, command line)
 ```bash
 export LLM_PROVIDER=openrouter OPENROUTER_API_KEY=...    # or ANTHROPIC_API_KEY=..., or LLM_PROVIDER=ollama
 python -m src.eval.run_eval --n 50                          # outputs/eval/
@@ -173,9 +220,9 @@ python app.py     # http://localhost:7860
 
 ## Running on Kaggle
 Done: model training and evaluation (01–03), Grad-CAM++ explainability (04), choosing the main detector,
-EfficientNet-B0 (04b), and ungrounded LLM explanations (05; prompt and settings now frozen as the phase 4
-baseline). Next: **RAG-grounded explanations** (phase 4). The faithfulness evaluation and the demo are parked in
-`kaggle/later/`.
+EfficientNet-B0 (04b), and ungrounded LLM explanations (05; prompt and settings frozen as the phase 4 baseline).
+Current phase: **RAG-grounded explanations** (notebook 06). The faithfulness evaluation (07) and the demo (08)
+are parked in `kaggle/later/`.
 
 Each notebook's saved output is added as an input to the next one (**Save Version → Save & Run All (Commit)**,
 then **Add Input → Your Work → Notebooks**).
@@ -189,6 +236,7 @@ then **Add Input → Your Work → Notebooks**).
 | `04_gradcam` | 01, 01b, 02 (+ copies of 02) | GPU T4 | heatmap gallery, deletion/insertion faithfulness, region attribution |
 | `04b_model_selection` | 03, 04 (committed outputs) | None | accuracy vs. explainability charts, pre-declared scorecard to pick the main model |
 | `05_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0); secret `GROQ_API_KEY` | GPU T4 (detector only) | evidence summaries + ungrounded explanations from GPT-OSS-120B, GPT-OSS-20B and Qwen3.8-27B (Groq free tier), with prompts and raw replies; worked examples and pilot consistency rates |
+| `06_grounded_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0), 05 (committed output); secret `GROQ_API_KEY` | GPU T4 (detector, embeddings, NLI) | retriever comparison; grounded and verified explanations from the same three models on the same images; all three conditions scored with the same checks; model agreement; a sentence sample for checking the NLI model by hand. One run uses up to ~180K Groq tokens per model, so repeat runs go on separate days (`RUN_TAG`) |
 
 Training all seven models takes roughly 7–8 GPU-hours. Kaggle stops sessions at 12 h, so `02_train` skips models
 that would not fit; to be safe, run two copies of it with the model list split between them. `03_evaluate` collects
@@ -205,9 +253,9 @@ src/faces.py     face detection + cropping (extraction and UI)
 src/kaggle_utils.py  locate earlier notebooks' outputs on Kaggle
 kaggle/          Kaggle notebooks for the current phase (kaggle/later/: parked phases)
 src/xai/         Grad-CAM++
-src/explain/     corpus loader, retriever, LLM providers + explainer
-src/eval/        metrics + evaluation runner
-corpus/          curated forensic-artifact notes with citations
+src/explain/     evidence-card loader, retriever, LLM providers + explainer
+src/eval/        metrics, verifier (grounding checks + NLI), evaluation runner
+corpus/          evidence cards (one claim each, with regions, families and source)
 notebooks/       CNN learning notebooks
 data/ outputs/   (git-ignored)
 ```

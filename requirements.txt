@@ -6,6 +6,8 @@ opencv-python>=4.8
 numpy
 pillow
 scikit-learn>=1.3
+transformers>=4.40  # retriever embeddings (bge-small) and the NLI verifier
+sentencepiece  # DeBERTa-v3 tokenizer (NLI verifier)
 matplotlib
 tqdm
 anthropic>=0.40

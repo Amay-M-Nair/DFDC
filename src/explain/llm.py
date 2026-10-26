@@ -5,12 +5,14 @@ The LLM never sees the image. It receives only the evidence summary built by Exp
 from fixed lists, so every claim can be checked automatically against the heatmap in phase 5.
 
 Both conditions share the same system prompt, evidence summary, label sets and output schema; the only
-difference is whether retrieved forensic passages are included (and must be cited).
+difference is that the grounded prompt adds retrieved evidence cards (corpus/) and the instruction to use and
+cite them. The "verified" condition checks each grounded answer (src/eval/verify.py) and asks once for a
+revision when a check fails.
 The LLM backend (Groq, Anthropic, OpenRouter, Ollama or any OpenAI-compatible server) is set in providers.py.
 """
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 from src.explain import providers
 from src.explain.corpus import artifact_taxonomy
@@ -38,8 +40,32 @@ Respond with ONLY a JSON object with these keys:
 
 GROUNDED_SUFFIX = """
 
-Forensic reference passages are provided below. Base the artifact_type and explanation ONLY on artefact \
-categories that these passages support for the highlighted region, and cite the ids of the passages you use."""
+Forensic reference cards follow the evidence summary. Each card has an id in square brackets, says what it is \
+about and lists the facial regions it applies to. Use them as your only source of forensic knowledge:
+- If the verdict is FAKE, choose artifact_type only from the artefact cards, and only a type whose card lists \
+your claimed_region. Scope cards say when an artefact does not apply and limitation cards say what the evidence \
+cannot show; follow both.
+- Support every statement with the evidence summary or a card, and cite the ids of all cards you used."""
+
+REVISION = """
+
+Your previous answer was:
+{previous}
+
+Automatic checks found these problems:
+{problems}
+
+Rewrite the answer to fix them, using only the evidence summary and the cards above. Respond with ONLY the \
+JSON object."""
+
+CARD_ABOUT = {"artifact": "artefact: {}", "scope": "scope of: {}", "limitation": "limitation of the evidence",
+              "authentic": "authentic cues"}
+
+
+def format_card(d) -> str:
+    """One evidence card as the LLM sees it."""
+    regions = "any" if set(REGIONS) <= set(d.regions) else ", ".join(d.regions)
+    return f"[{d.id}] {CARD_ABOUT[d.kind].format(d.artifact_type)} | regions: {regions}\n{d.text} ({d.citation})"
 
 
 @dataclass
@@ -55,6 +81,8 @@ class LLMExplanation:
     llm: str = ""                # provider:model that produced it
     latency_s: float = 0.0
     raw: str = ""                # the model's raw reply, kept for auditing
+    revised: bool = False        # verified condition: a revision was requested
+    problems: list = field(default_factory=list)  # verified condition: what the checks found in the grounded answer
 
     def to_dict(self):
         return asdict(self)
@@ -69,27 +97,32 @@ def _parse_json(text: str) -> dict:
 
 
 class ForensicExplainer:
-    def __init__(self):
+    def __init__(self, retriever: Retriever = None):
+        """retriever: a shared Retriever; one is built on first grounded use if not given."""
         self.client = providers.ChatClient()
         self.name = providers.describe()
-        self.retriever = Retriever()
+        self._retriever = retriever
         self.taxonomy = sorted(artifact_taxonomy())
         self.system = SYSTEM.format(regions=json.dumps(REGIONS), artifacts=json.dumps(self.taxonomy))
+
+    @property
+    def retriever(self) -> Retriever:
+        if self._retriever is None:
+            self._retriever = Retriever()
+        return self._retriever
 
     @staticmethod
     def available() -> bool:
         return providers.available()
 
     def build_prompt(self, exp, grounded: bool):
-        """(system prompt, user message, retrieved docs) for one Explanation."""
+        """(system prompt, user message, retrieved cards) for one Explanation."""
         system, user = self.system, f"Evidence summary:\n{exp.describe()}"
         docs = []
         if grounded:
-            regions = [r for r, _ in exp.top_regions[:3]]
-            docs = self.retriever.search(exp.describe(), regions=regions, verdict=exp.label, k=3)
+            docs = self.retriever.retrieve(exp)
             system += GROUNDED_SUFFIX
-            passages = "\n\n".join(f"[{d.id}] ({d.citation})\n{d.text}" for d in docs)
-            user += f"\n\nForensic reference passages:\n{passages}"
+            user += "\n\nForensic reference cards:\n" + "\n\n".join(format_card(d) for d in docs)
         return system, user, docs
 
     def _parse(self, raw: str, condition: str, docs, latency: float) -> LLMExplanation:
@@ -121,6 +154,30 @@ class ForensicExplainer:
                                               error=f"{type(e).__name__}: {e}"))
                 continue
             results.append(self._parse(raw, condition, d, self.client.last_latency))  # waits for rate limits excluded
+        return results
+
+    def revise_batch(self, exps, outs, verifier):
+        """The "verified" condition: check each grounded answer and, when a check fails, ask once for a revision
+        that lists the problems. Answers that pass are kept unchanged (revised=False).
+        verifier: src.eval.verify.EvidenceVerifier"""
+        results = []
+        for exp, first in zip(exps, outs):
+            if first.error and not first.raw:  # the request itself failed: nothing to revise
+                results.append(replace(first, condition="verified", problems=["request failed"]))
+                continue
+            problems = verifier.problems(first, exp)
+            if not problems:
+                results.append(replace(first, condition="verified"))
+                continue
+            system, user, docs = self.build_prompt(exp, grounded=True)
+            user += REVISION.format(previous=first.raw.strip(), problems="\n".join(f"- {p}" for p in problems))
+            try:
+                out = self._parse(self.client.chat(system, user), "verified", docs, self.client.last_latency)
+            except Exception as e:
+                out = LLMExplanation("verified", retrieved=[d.id for d in docs], llm=self.name,
+                                     error=f"{type(e).__name__}: {e}")
+            out.revised, out.problems = True, problems
+            results.append(out)
         return results
 
     def explain(self, exp, grounded: bool) -> LLMExplanation:
