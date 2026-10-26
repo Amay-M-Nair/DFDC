@@ -101,7 +101,9 @@ retried with backoff on rate limits and transient server errors. `LLM_REASONING_
 that reason before answering (Gemini and Groq default to `low`; `off` sends nothing) and `LLM_MAX_TOKENS` the
 output limit (2048 for Gemini and 1024 for Groq, which leaves room for reasoning tokens; 600 otherwise).
 Groq's free tier allows, per model, 30 requests and 8K tokens per minute and 1K requests and 200K tokens per day;
-notebook 05 spaces requests 12 s apart to stay under the per-minute token limit.
+notebook 05 spaces requests 12 s apart to stay under the per-minute token limit. Qwen3.8-27B is also capped at 1K
+output tokens per minute, and Groq refuses any request whose output limit is above that, so notebook 05 gives it a
+900-token limit and 30 s spacing.
 
 Temperature: Groq, OpenRouter, Ollama and other OpenAI-compatible servers use 0, so repeated runs give (nearly) the
 same answers. Gemini keeps its default of 1.0, because Google advises against lowering it for Gemini 3 models,
