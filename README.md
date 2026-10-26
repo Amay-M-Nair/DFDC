@@ -123,6 +123,41 @@ automatically (phase 5).
 Each answer records whether it is valid (`schema_ok`: JSON with allowed labels), the `provider:model`, the
 latency and the raw reply. Phase 4 adds retrieved forensic passages to the same prompt; nothing else changes.
 
+### Pilot results (notebook 05)
+48 pilot images (24 FF++, 24 Celeb-DF; one frame per test video), explained by each model with reasoning effort
+*low*. The detector got 39 of the 48 right (7 of the 9 errors are on Celeb-DF, 4 at high confidence); the
+explanations describe its verdict, right or wrong.
+
+| | GPT-OSS-120B | GPT-OSS-20B | Qwen3.8-27B |
+|---|---|---|---|
+| Valid output | 100% | 100% | 98% |
+| Region in top-3 | 100% | 100% | 98% |
+| Pointing hit | 65% | 63% | 73% |
+| Region IoU (mean) | 0.19 | 0.21 | 0.20 |
+| Artifact plausible for the regions | 94% | 96% | 88% |
+| Verdict consistent | 100% | 100% | 98% |
+| Mentions uncertainty on borderline verdicts | 1 of 5 | 0 of 5 | 5 of 5 |
+| Describes the image as if seen (unhedged) | 0% | 4% | 19% |
+| GAN-fingerprint claims (fake verdicts) | 0 of 31 | 2 of 31 | 8 of 30 |
+| Seconds per explanation | 0.8 | 0.8 | 26 |
+
+- **The artifact is a guess.** On the 30 images all three models called fake, they agree on the artifact type
+  only slightly (Fleiss' κ = 0.16); 11 of the 30 get three different types. GPT-OSS-20B names teeth/mouth
+  artefacts for 21 of 31 fakes.
+- **The easy checks are nearly saturated.** Region-in-top-3, verdict consistency and artifact plausibility are
+  close to 100% because the prompt lists the regions and most artefact types fit a central-face heatmap.
+  Pointing hit and IoU mostly reflect how often a model names the large mouth region; they need trivial baselines
+  (e.g. "always name the top region") before they say anything about the LLM.
+- **Qwen invents visual detail** ("natural skin texture… consistent tooth alignment") and claims GAN fingerprints
+  on face swaps and re-enactments, which the corpus describes as a cue for fully synthetic faces. It is also the
+  only model that hedges on borderline verdicts. One FF++ NeuralTextures image gets an empty reply from Qwen in
+  both runs (reasoning uses up the output limit).
+- **Runs are not exactly repeatable.** Two runs with the same settings (temperature 0) differed by up to 6 points
+  on some rates, so differences of that size between conditions are within run-to-run noise.
+
+The visual-claim, uncertainty and GAN counts come from keyword matching on the explanations, so they are
+approximate; the other rates are computed by notebook 05.
+
 ## Grounded vs. ungrounded evaluation
 ```bash
 export LLM_PROVIDER=openrouter OPENROUTER_API_KEY=...    # or ANTHROPIC_API_KEY=..., or LLM_PROVIDER=ollama
@@ -143,9 +178,10 @@ python app.py     # http://localhost:7860
 ```
 
 ## Running on Kaggle
-Current phase: **ungrounded LLM explanations** (notebook 05), after model training and evaluation (01–03),
-Grad-CAM++ explainability (04) and choosing the main detector, EfficientNet-B0 (04b).
-The faithfulness evaluation and the demo are parked in `kaggle/later/`.
+Done: model training and evaluation (01–03), Grad-CAM++ explainability (04), choosing the main detector,
+EfficientNet-B0 (04b), and ungrounded LLM explanations (05; prompt and settings now frozen as the phase 4
+baseline). Next: **RAG-grounded explanations** (phase 4). The faithfulness evaluation and the demo are parked in
+`kaggle/later/`.
 
 Each notebook's saved output is added as an input to the next one (**Save Version → Save & Run All (Commit)**,
 then **Add Input → Your Work → Notebooks**).
