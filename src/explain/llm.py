@@ -6,11 +6,10 @@ from fixed lists, so every claim can be checked automatically against the heatma
 
 Both conditions share the same system prompt, evidence summary, label sets and output schema; the only
 difference is whether retrieved forensic passages are included (and must be cited).
-The LLM backend (hf, Anthropic, OpenRouter, Ollama or any OpenAI-compatible server) is set in providers.py.
+The LLM backend (Groq, Anthropic, OpenRouter, Ollama or any OpenAI-compatible server) is set in providers.py.
 """
 import json
 import re
-import time
 from dataclasses import asdict, dataclass, field
 
 from src.explain import providers
@@ -109,15 +108,10 @@ class ForensicExplainer:
         return out
 
     def explain_batch(self, exps, grounded: bool):
-        """Explanations for several images (batched on the GPU for hf, one API call each otherwise).
+        """Explanations for several images, one API call each.
         A failed API call is recorded as an error for that image and the rest carry on."""
         condition = "grounded" if grounded else "ungrounded"
         prompts = [self.build_prompt(e, grounded) for e in exps]
-        if self.client.provider == "hf":
-            start = time.time()
-            raws = self.client.chat_batch([(s, u) for s, u, _ in prompts])
-            per = (time.time() - start) / max(1, len(exps))
-            return [self._parse(r, condition, d, per) for r, (_, _, d) in zip(raws, prompts)]
         results = []
         for s, u, d in prompts:
             try:

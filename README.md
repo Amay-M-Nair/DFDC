@@ -79,15 +79,12 @@ Deletion/insertion faithfulness (Grad-CAM vs. Grad-CAM++ vs. random, paired Wilc
 attribution for every model and manipulation, in `outputs/gradcam/`.
 
 ## Choosing the LLM
-The explanation step works with the Gemini and Groq APIs (both have free tiers), Anthropic, OpenRouter, Hugging
-Face models on the local GPU, a local model, or any OpenAI-compatible server. Set these environment variables
-(on Kaggle, the notebooks set them for you):
+The explanation step works with the Groq API (free tier; used for phase 3), Anthropic, OpenRouter, a local
+model, or any OpenAI-compatible server. Set these environment variables (on Kaggle, the notebooks set them for you):
 
 | Provider | `LLM_PROVIDER` | Key | Default `LLM_MODEL` |
 |---|---|---|---|
-| Google Gemini API (free tier) | `gemini` | `GEMINI_API_KEY` (aistudio.google.com) | `gemini-3.8-flash` |
 | Groq (free tier) | `groq` | `GROQ_API_KEY` (console.groq.com) | `openai/gpt-oss-120b` (also used: `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`) |
-| Hugging Face (local GPU, `transformers`) | `hf` | `HF_TOKEN` (only for gated models such as Llama) | `Qwen/Qwen2.5-7B-Instruct` |
 | Anthropic | `anthropic` (default) | `ANTHROPIC_API_KEY` | `claude-haiku-5-5` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `meta-llama/llama-3.3-70b-instruct` |
 | Ollama (local) | `ollama` | none | `llama3.1:8b` |
@@ -98,18 +95,15 @@ a comparison run; the model name is recorded in `outputs/eval/summary.json`.
 
 For free tiers, `LLM_MIN_INTERVAL` spaces requests (seconds) to stay under per-minute limits, and API calls are
 retried with backoff on rate limits and transient server errors. `LLM_REASONING_EFFORT` sets the effort for models
-that reason before answering (Gemini and Groq default to `low`; `off` sends nothing) and `LLM_MAX_TOKENS` the
-output limit (2048 for Gemini and 1024 for Groq, which leaves room for reasoning tokens; 600 otherwise).
+that reason before answering (Groq defaults to `low`; `off` sends nothing) and `LLM_MAX_TOKENS` the output limit
+(1024 for Groq, which leaves room for reasoning tokens; 600 otherwise).
 Groq's free tier allows, per model, 30 requests and 8K tokens per minute and 1K requests and 200K tokens per day;
 notebook 05 spaces requests 12 s apart to stay under the per-minute token limit. Qwen3.8-27B is also capped at 1K
 output tokens per minute, and Groq refuses any request whose output limit is above that, so notebook 05 gives it a
 900-token limit and 30 s spacing.
 
 Temperature: Groq, OpenRouter, Ollama and other OpenAI-compatible servers use 0, so repeated runs give (nearly) the
-same answers. Gemini keeps its default of 1.0, because Google advises against lowering it for Gemini 3 models,
-and Anthropic uses the API default; their answers can vary between runs. For `hf`, decoding is greedy,
-`LLM_LOAD_4BIT=1` loads models too big for the GPU in fp16 (needs `bitsandbytes`) and `LLM_BATCH` sets how many
-prompts are generated together (default 8).
+same answers; Anthropic uses the API default, so its answers can vary between runs.
 
 ## Ungrounded explanations (phase 3)
 The LLM never sees the image. It receives only an **evidence summary** filled from a fixed template: the
