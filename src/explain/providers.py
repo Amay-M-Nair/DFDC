@@ -2,19 +2,24 @@
 
 Pick one with environment variables (or Kaggle Secrets):
 
-    LLM_PROVIDER   anthropic (default) | openrouter | ollama | openai | hf
+    LLM_PROVIDER   anthropic (default) | gemini | groq | openrouter | ollama | openai | hf
     LLM_MODEL      model name for that provider (sensible default per provider)
     LLM_BASE_URL   override the endpoint (e.g. LM Studio http://localhost:1234/v1, vLLM, llama.cpp server)
-    LLM_API_KEY    key for the provider; falls back to ANTHROPIC_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY
+    LLM_API_KEY    key used when the provider's own variable (GEMINI_API_KEY, GROQ_API_KEY, ANTHROPIC_API_KEY,
+                   OPENROUTER_API_KEY, OPENAI_API_KEY) is not set
+    LLM_MIN_INTERVAL      seconds between API requests, to stay inside free-tier rate limits (default 0)
+    LLM_REASONING_EFFORT  reasoning effort for models that think before answering ("off" to not send it)
+    LLM_MAX_TOKENS        output token limit (reasoning tokens included where the provider counts them)
 
-Everything except Anthropic and hf goes through the OpenAI-compatible chat API, which OpenRouter, Ollama,
-LM Studio, vLLM and llama.cpp's server all expose.
+Everything except Anthropic and hf goes through the OpenAI-compatible chat API, which Gemini, Groq, OpenRouter,
+Ollama, LM Studio, vLLM and llama.cpp's server all expose. Gemini and Groq both have free tiers.
 
 hf runs a Hugging Face chat model on the local GPU with `transformers` (e.g. Qwen/Qwen2.5-7B-Instruct):
     HF_TOKEN       only for gated models (e.g. meta-llama/*): accept the licence on the model page first
     LLM_LOAD_4BIT  "1" to load in 4-bit (needs bitsandbytes) for models too big for the GPU in fp16
     LLM_BATCH      prompts generated together per batch (default 8)
-hf decodes greedily and OpenAI-compatible providers use temperature 0, so their results are reproducible.
+hf decodes greedily and the OpenAI-compatible providers use temperature 0, so their results are reproducible.
+Gemini keeps its default temperature (1.0): Google advises against lowering it for Gemini 3 models.
 """
 import gc
 import os
@@ -28,10 +33,17 @@ class ProviderSpec:
     base_url: str | None
     key_env: str | None      # provider-specific key variable
     needs_key: bool = True
+    temperature: float | None = 0.0     # None = the provider's default
+    reasoning_effort: str | None = None
+    max_tokens: int = 600
 
 
 PROVIDERS = {
     "anthropic": ProviderSpec("claude-haiku-5-5", None, "ANTHROPIC_API_KEY"),
+    "gemini": ProviderSpec("gemini-3.8-flash", "https://generativelanguage.googleapis.com/v1beta/openai/",
+                           "GEMINI_API_KEY", temperature=None, reasoning_effort="low", max_tokens=2048),
+    "groq": ProviderSpec("openai/gpt-oss-120b", "https://api.groq.com/openai/v1", "GROQ_API_KEY",
+                         reasoning_effort="low", max_tokens=1024),
     "openrouter": ProviderSpec("meta-llama/llama-3.3-70b-instruct", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
     "ollama": ProviderSpec("llama3.1:8b", "http://localhost:11434/v1", None, needs_key=False),
     "openai": ProviderSpec("gpt-4o-mini", None, "OPENAI_API_KEY"),  # any OpenAI-compatible server via LLM_BASE_URL
@@ -44,7 +56,7 @@ def settings():
     if name not in PROVIDERS:
         raise ValueError(f"LLM_PROVIDER must be one of {sorted(PROVIDERS)}, got {name!r}")
     spec = PROVIDERS[name]
-    key = os.environ.get("LLM_API_KEY") or (os.environ.get(spec.key_env) if spec.key_env else None)
+    key = (os.environ.get(spec.key_env) if spec.key_env else None) or os.environ.get("LLM_API_KEY")
     model = os.environ.get("LLM_MODEL") or spec.default_model
     base_url = os.environ.get("LLM_BASE_URL") or spec.base_url
     return name, spec, model, base_url, key
@@ -58,8 +70,8 @@ def available() -> bool:
 
 
 def describe() -> str:
-    name, _, model, base_url, _ = settings()
-    return f"{name}:{model}" + (f" @ {base_url}" if base_url and name != "openrouter" else "")
+    name, spec, model, base_url, _ = settings()
+    return f"{name}:{model}" + (f" @ {base_url}" if base_url and (base_url != spec.base_url or name == "openai") else "")
 
 
 _HF_CACHE = {}  # model id -> (tokenizer, model); one model on the GPU at a time
@@ -128,7 +140,13 @@ class ChatClient:
     """`chat(system, user) -> str` over whichever provider is configured."""
 
     def __init__(self):
-        self.provider, spec, self.model, base_url, key = settings()
+        self.provider, self.spec, self.model, base_url, key = settings()
+        effort = os.environ.get("LLM_REASONING_EFFORT", self.spec.reasoning_effort or "")
+        self.reasoning_effort = None if effort in ("", "off") else effort
+        self.max_tokens = int(os.environ.get("LLM_MAX_TOKENS", self.spec.max_tokens))
+        self.min_interval = float(os.environ.get("LLM_MIN_INTERVAL", "0"))
+        self._last_request = 0.0
+        self.last_latency = 0.0  # seconds taken by the last successful API request (waits not included)
         if self.provider == "hf":
             self._hf = HFLocal(self.model, load_4bit=os.environ.get("LLM_LOAD_4BIT") == "1")
         elif self.provider == "anthropic":
@@ -140,20 +158,24 @@ class ChatClient:
 
             self._client = OpenAI(base_url=base_url, api_key=key or "not-needed")
 
-    def chat(self, system: str, user: str, max_tokens: int = 600) -> str:
+    def chat(self, system: str, user: str, max_tokens: int = None) -> str:
         return self.chat_batch([(system, user)], max_tokens)[0]
 
-    def chat_batch(self, pairs, max_tokens: int = 600, retries: int = 4):
+    def chat_batch(self, pairs, max_tokens: int = None, retries: int = 4):
         """Completions for several (system, user) pairs. hf: generated in GPU batches; APIs: one call each,
-        retried with exponential backoff on rate limits / transient server errors."""
+        spaced by LLM_MIN_INTERVAL and retried with exponential backoff on rate limits / transient server errors."""
+        max_tokens = max_tokens or self.max_tokens
         if self.provider == "hf":
             size = int(os.environ.get("LLM_BATCH", "8"))
             return [t for i in range(0, len(pairs), size) for t in self._hf.generate(pairs[i:i + size], max_tokens)]
         out = []
         for system, user in pairs:
             for attempt in range(retries + 1):
+                time.sleep(max(0.0, self._last_request + self.min_interval - time.time()))
+                self._last_request = start = time.time()
                 try:
                     out.append(self._api(system, user, max_tokens))
+                    self.last_latency = time.time() - start
                     break
                 except Exception as e:  # error classes differ per SDK
                     status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
@@ -168,7 +190,12 @@ class ChatClient:
             resp = self._client.messages.create(model=self.model, max_tokens=max_tokens, system=system,
                                                 messages=[{"role": "user", "content": user}])
             return "".join(b.text for b in resp.content if b.type == "text")
+        kwargs = {}
+        if self.spec.temperature is not None:
+            kwargs["temperature"] = self.spec.temperature
+        if self.reasoning_effort:
+            kwargs["reasoning_effort"] = self.reasoning_effort
         resp = self._client.chat.completions.create(
-            model=self.model, max_tokens=max_tokens, temperature=0,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
+            model=self.model, max_tokens=max_tokens,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], **kwargs)
         return resp.choices[0].message.content or ""

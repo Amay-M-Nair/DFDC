@@ -7,7 +7,7 @@ those explanations are grounded or hallucinated.
 |---|---|---|
 | 1 | EfficientNet-B0 classifier vs. 5 baselines; trained on FF++, tested on FF++ and Celeb-DF | `src/classifier/` |
 | 2 | Grad-CAM++ localisation + facial-region attribution | `src/xai/gradcam.py` |
-| 3 | Ungrounded LLM explanation (Hugging Face models on the GPU, Anthropic, OpenRouter or local LLM) | `src/explain/llm.py`, `src/explain/providers.py` |
+| 3 | Ungrounded LLM explanation (GPT-OSS-120B/20B and Qwen3.8-27B on Groq's free tier; other providers also work) | `src/explain/llm.py`, `src/explain/providers.py` |
 | 4 | RAG-grounded explanation over a curated forensic corpus | `corpus/`, `src/explain/retriever.py` |
 | 5 | Faithfulness IoU, pointing game, hallucination rate | `src/eval/` |
 | 6 | Local demo UI (Gradio, localhost) | `app.py` |
@@ -79,23 +79,35 @@ Deletion/insertion faithfulness (Grad-CAM vs. Grad-CAM++ vs. random, paired Wilc
 attribution for every model and manipulation, in `outputs/gradcam/`.
 
 ## Choosing the LLM
-The explanation step works with Hugging Face models on the local GPU, Anthropic, OpenRouter, a local model, or
-any OpenAI-compatible server. Set these environment variables (on Kaggle, the notebooks set them for you):
+The explanation step works with the Gemini and Groq APIs (both have free tiers), Anthropic, OpenRouter, Hugging
+Face models on the local GPU, a local model, or any OpenAI-compatible server. Set these environment variables
+(on Kaggle, the notebooks set them for you):
 
 | Provider | `LLM_PROVIDER` | Key | Default `LLM_MODEL` |
 |---|---|---|---|
+| Google Gemini API (free tier) | `gemini` | `GEMINI_API_KEY` (aistudio.google.com) | `gemini-3.8-flash` |
+| Groq (free tier) | `groq` | `GROQ_API_KEY` (console.groq.com) | `openai/gpt-oss-120b` (also used: `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`) |
 | Hugging Face (local GPU, `transformers`) | `hf` | `HF_TOKEN` (only for gated models such as Llama) | `Qwen/Qwen2.5-7B-Instruct` |
 | Anthropic | `anthropic` (default) | `ANTHROPIC_API_KEY` | `claude-haiku-5-5` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `meta-llama/llama-3.3-70b-instruct` |
 | Ollama (local) | `ollama` | none | `llama3.1:8b` |
 | LM Studio / vLLM / llama.cpp / OpenAI | `openai` + `LLM_BASE_URL` | `OPENAI_API_KEY` (not needed for local servers) | `gpt-4o-mini` |
 
-`LLM_API_KEY` works as a key for any provider. Keep the same model for both conditions in a comparison run;
-the model name is recorded in `outputs/eval/summary.json`. For `hf`, `LLM_LOAD_4BIT=1` loads models too big for
-the GPU in fp16 (needs `bitsandbytes`) and `LLM_BATCH` sets how many prompts are generated together (default 8).
-`hf` decodes greedily and the OpenAI-compatible providers use temperature 0, so those runs are reproducible
-(Anthropic uses the API's default temperature). API calls are retried with backoff on rate limits and transient
-server errors.
+`LLM_API_KEY` is used when the provider's own key variable is not set. Keep the same model for both conditions in
+a comparison run; the model name is recorded in `outputs/eval/summary.json`.
+
+For free tiers, `LLM_MIN_INTERVAL` spaces requests (seconds) to stay under per-minute limits, and API calls are
+retried with backoff on rate limits and transient server errors. `LLM_REASONING_EFFORT` sets the effort for models
+that reason before answering (Gemini and Groq default to `low`; `off` sends nothing) and `LLM_MAX_TOKENS` the
+output limit (2048 for Gemini and 1024 for Groq, which leaves room for reasoning tokens; 600 otherwise).
+Groq's free tier allows, per model, 30 requests and 8K tokens per minute and 1K requests and 200K tokens per day;
+notebook 05 spaces requests 12 s apart to stay under the per-minute token limit.
+
+Temperature: Groq, OpenRouter, Ollama and other OpenAI-compatible servers use 0, so repeated runs give (nearly) the
+same answers. Gemini keeps its default of 1.0, because Google advises against lowering it for Gemini 3 models,
+and Anthropic uses the API default; their answers can vary between runs. For `hf`, decoding is greedy,
+`LLM_LOAD_4BIT=1` loads models too big for the GPU in fp16 (needs `bitsandbytes`) and `LLM_BATCH` sets how many
+prompts are generated together (default 8).
 
 ## Ungrounded explanations (phase 3)
 The LLM never sees the image. It receives only an **evidence summary** filled from a fixed template: the
@@ -144,7 +156,7 @@ then **Add Input → Your Work → Notebooks**).
 | `03_evaluate` | 01, 01b, 02 (+ copies of 02) | GPU T4 | comparison tables, significance tests, figures |
 | `04_gradcam` | 01, 01b, 02 (+ copies of 02) | GPU T4 | heatmap gallery, deletion/insertion faithfulness, region attribution |
 | `04b_model_selection` | 03, 04 (committed outputs) | None | accuracy vs. explainability charts, pre-declared scorecard to pick the main model |
-| `05_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0) | GPU T4 x2 | evidence summaries + ungrounded explanations from Qwen2.5-7B, Llama-3.1-8B and Mistral-7B, with prompts and raw replies; worked examples and pilot consistency rates |
+| `05_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0); secret `GROQ_API_KEY` | GPU T4 (detector only) | evidence summaries + ungrounded explanations from GPT-OSS-120B, GPT-OSS-20B and Qwen3.8-27B (Groq free tier), with prompts and raw replies; worked examples and pilot consistency rates |
 
 Training all seven models takes roughly 7–8 GPU-hours. Kaggle stops sessions at 12 h, so `02_train` skips models
 that would not fit; to be safe, run two copies of it with the model list split between them. `03_evaluate` collects

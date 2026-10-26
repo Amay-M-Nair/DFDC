@@ -80,13 +80,15 @@ def load_secret(name: str, quiet: bool = False) -> bool:
 def setup_llm(provider: str = "anthropic", model: str = None) -> bool:
     """Configure the explanation LLM from notebook settings + Kaggle Secrets.
 
-    Store whichever key you use as a secret: LLM_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY.
-    provider="hf" runs Hugging Face models on the GPU (HF_TOKEN secret only needed for gated models such as Llama).
+    Store each key you use as a secret under its provider's name: GEMINI_API_KEY, GROQ_API_KEY, ANTHROPIC_API_KEY,
+    OPENROUTER_API_KEY or OPENAI_API_KEY (LLM_API_KEY is only a fallback, so it can't hand one provider's key
+    to another). provider="hf" runs Hugging Face models on the GPU (HF_TOKEN only for gated models such as Llama).
     """
     os.environ["LLM_PROVIDER"] = provider
     if model:
         os.environ["LLM_MODEL"] = model
-    for name in ("LLM_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "LLM_BASE_URL", "HF_TOKEN"):
+    for name in ("GEMINI_API_KEY", "GROQ_API_KEY", "LLM_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
+                 "OPENAI_API_KEY", "LLM_BASE_URL", "HF_TOKEN"):
         load_secret(name, quiet=True)
     from src.explain import providers
 

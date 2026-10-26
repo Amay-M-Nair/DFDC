@@ -109,7 +109,8 @@ class ForensicExplainer:
         return out
 
     def explain_batch(self, exps, grounded: bool):
-        """Explanations for several images (batched on the GPU for hf, one API call each otherwise)."""
+        """Explanations for several images (batched on the GPU for hf, one API call each otherwise).
+        A failed API call is recorded as an error for that image and the rest carry on."""
         condition = "grounded" if grounded else "ungrounded"
         prompts = [self.build_prompt(e, grounded) for e in exps]
         if self.client.provider == "hf":
@@ -119,14 +120,13 @@ class ForensicExplainer:
             return [self._parse(r, condition, d, per) for r, (_, _, d) in zip(raws, prompts)]
         results = []
         for s, u, d in prompts:
-            start = time.time()
             try:
                 raw = self.client.chat(s, u)
             except Exception as e:
                 results.append(LLMExplanation(condition, retrieved=[x.id for x in d], llm=self.name,
                                               error=f"{type(e).__name__}: {e}"))
                 continue
-            results.append(self._parse(raw, condition, d, time.time() - start))
+            results.append(self._parse(raw, condition, d, self.client.last_latency))  # waits for rate limits excluded
         return results
 
     def explain(self, exp, grounded: bool) -> LLMExplanation:
