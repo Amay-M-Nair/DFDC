@@ -95,6 +95,33 @@ def region_scores(heatmap: np.ndarray, regions: dict = None) -> dict:
     return scores
 
 
+def region_concentration(heatmap: np.ndarray, regions: dict = None) -> dict:
+    """Mean heat inside each region relative to the image mean (1.0 = average, 2.0 = twice as hot).
+
+    Unlike the share of total heat, this doesn't favour large regions (background, forehead) just for their size.
+    Pixels are assigned to regions exactly as in region_scores.
+    """
+    regions = regions or FACE_REGIONS
+    overall = float(heatmap.mean()) + 1e-8
+    covered = np.zeros(heatmap.shape, dtype=bool)
+    conc = {}
+    for name in regions:
+        m = region_mask(name, heatmap.shape, regions) & ~covered
+        conc[name] = float(heatmap[m].mean() / overall) if m.any() else 0.0
+        covered |= m
+    conc[BACKGROUND] = float(heatmap[~covered].mean() / overall) if (~covered).any() else 0.0
+    return conc
+
+
+def confidence_level(prob_fake: float, threshold: float) -> str:
+    """How far the score is past the decision threshold, as a fraction of the room on that side."""
+    if prob_fake >= threshold:
+        margin = (prob_fake - threshold) / max(1 - threshold, 1e-6)
+    else:
+        margin = (threshold - prob_fake) / max(threshold, 1e-6)
+    return "high" if margin >= 0.5 else "moderate" if margin >= 0.15 else "borderline"
+
+
 def heatmap_mask(heatmap: np.ndarray, quantile: float = 0.8) -> np.ndarray:
     return heatmap >= np.quantile(heatmap, quantile)
 
@@ -130,27 +157,46 @@ class Explanation:
     regions: dict = field(default_factory=lambda: dict(FACE_REGIONS))  # region -> normalised box on this face
     region_source: str = "grid"    # "landmarks" or "grid"
     method: str = "gradcam++"
+    region_concentration: dict = field(default_factory=dict)  # region -> mean heat / image mean
+    rank_by: str = "concentration"  # how regions are ranked: "concentration" or "share"
+    threshold: float = 0.5          # the detector's decision threshold (tuned on FF++ validation)
 
     @property
     def top_regions(self):
-        return sorted(self.region_scores.items(), key=lambda kv: kv[1], reverse=True)
+        """(region, score) ranked by `rank_by`; falls back to share if concentration wasn't computed."""
+        key = self.region_concentration if self.rank_by == "concentration" and self.region_concentration \
+            else self.region_scores
+        return sorted(key.items(), key=lambda kv: kv[1], reverse=True)
+
+    @property
+    def confidence(self) -> str:
+        return confidence_level(self.prob_fake, self.threshold)
 
     def describe(self, k: int = 3) -> str:
-        """Plain-text heatmap summary passed to the LLM."""
+        """Plain-text evidence summary passed to the LLM: filled from fixed templates, no model involved."""
         x0, y0, x1, y1 = self.bbox
-        parts = [f"{name} ({share:.0%} of activation)" for name, share in self.top_regions[:k]]
-        name = {"gradcam++": "Grad-CAM++", "gradcam": "Grad-CAM"}.get(self.method, self.method)
-        return (f"Classifier verdict: {self.label.upper()} (P(fake) = {self.prob_fake:.2f}). "
-                f"{name} activation is concentrated in: {', '.join(parts)}. "
+        parts = []
+        for name, _ in self.top_regions[:k]:
+            share = f"{self.region_scores.get(name, 0):.0%} of total activation"
+            if self.region_concentration:
+                parts.append(f"{name} ({self.region_concentration[name]:.1f}x the image average, {share})")
+            else:
+                parts.append(f"{name} ({share})")
+        method = {"gradcam++": "Grad-CAM++", "gradcam": "Grad-CAM"}.get(self.method, self.method)
+        return (f"Classifier verdict: {self.label.upper()} (P(fake) = {self.prob_fake:.3f}; decision threshold "
+                f"{self.threshold:.3f}; {self.confidence} confidence). "
+                f"{method} evidence is most concentrated in: {'; '.join(parts)}. "
                 f"Hottest region bounding box (normalised x0,y0,x1,y1): "
                 f"({x0:.2f}, {y0:.2f}, {x1:.2f}, {y1:.2f}).")
 
 
 class Explainer:
-    def __init__(self, checkpoint=CHECKPOINT, device=None, method: str = "gradcam++", landmarks: bool = True):
+    def __init__(self, checkpoint=CHECKPOINT, device=None, method: str = "gradcam++", landmarks: bool = True,
+                 rank_by: str = "concentration"):
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.model = load_model(checkpoint, self.device)
         self.method = method
+        self.rank_by = rank_by
         self.cam = METHODS[method](model=self.model, target_layers=[self.model.target_layer],
                                    reshape_transform=self.model.cam_reshape)
         self.transform = eval_transform()
@@ -181,7 +227,8 @@ class Explainer:
         overlay = show_cam_on_image(rgb8.astype(np.float32) / 255.0, heatmap, use_rgb=True)
         regions, source = self.face_regions(rgb8)
         return Explanation(prob, label, heatmap, overlay, hottest_bbox(heatmap),
-                           region_scores(heatmap, regions), regions, source, self.method)
+                           region_scores(heatmap, regions), regions, source, self.method,
+                           region_concentration(heatmap, regions), self.rank_by, self.model.threshold)
 
 
 def draw_bbox(overlay: np.ndarray, bbox, color=(255, 255, 255)) -> np.ndarray:

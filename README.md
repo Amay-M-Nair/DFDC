@@ -7,7 +7,7 @@ those explanations are grounded or hallucinated.
 |---|---|---|
 | 1 | EfficientNet-B0 classifier vs. 5 baselines; trained on FF++, tested on FF++ and Celeb-DF | `src/classifier/` |
 | 2 | Grad-CAM++ localisation + facial-region attribution | `src/xai/gradcam.py` |
-| 3 | Ungrounded LLM explanation (Anthropic, OpenRouter or local LLM) | `src/explain/llm.py`, `src/explain/providers.py` |
+| 3 | Ungrounded LLM explanation (Hugging Face models on the GPU, Anthropic, OpenRouter or local LLM) | `src/explain/llm.py`, `src/explain/providers.py` |
 | 4 | RAG-grounded explanation over a curated forensic corpus | `corpus/`, `src/explain/retriever.py` |
 | 5 | Faithfulness IoU, pointing game, hallucination rate | `src/eval/` |
 | 6 | Local demo UI (Gradio, localhost) | `app.py` |
@@ -67,6 +67,9 @@ per-method AUC, params/GFLOPs/throughput/training time, paired significance test
 python -m src.xai.gradcam --image path/to/face.jpg --checkpoint outputs/checkpoints/convnext_tiny/best.pt
 ```
 Facial regions (eyes, nose, mouth, cheeks, forehead, chin) are placed from YuNet's 5 landmarks on each face.
+Regions are ranked by **concentration** (mean heat inside the region relative to the image mean), so large
+regions such as the background or forehead don't come first just for their size; `rank_by="share"` ranks by
+share of total heat instead.
 
 ### Heatmap evaluation (all models)
 ```bash
@@ -76,18 +79,35 @@ Deletion/insertion faithfulness (Grad-CAM vs. Grad-CAM++ vs. random, paired Wilc
 attribution for every model and manipulation, in `outputs/gradcam/`.
 
 ## Choosing the LLM
-The explanation step works with Anthropic, OpenRouter, a local model, or any OpenAI-compatible server.
-Set these environment variables (on Kaggle, the notebooks set them for you):
+The explanation step works with Hugging Face models on the local GPU, Anthropic, OpenRouter, a local model, or
+any OpenAI-compatible server. Set these environment variables (on Kaggle, the notebooks set them for you):
 
 | Provider | `LLM_PROVIDER` | Key | Default `LLM_MODEL` |
 |---|---|---|---|
+| Hugging Face (local GPU, `transformers`) | `hf` | `HF_TOKEN` (only for gated models such as Llama) | `Qwen/Qwen2.5-7B-Instruct` |
 | Anthropic | `anthropic` (default) | `ANTHROPIC_API_KEY` | `claude-haiku-5-5` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `meta-llama/llama-3.3-70b-instruct` |
 | Ollama (local) | `ollama` | none | `llama3.1:8b` |
 | LM Studio / vLLM / llama.cpp / OpenAI | `openai` + `LLM_BASE_URL` | `OPENAI_API_KEY` (not needed for local servers) | `gpt-4o-mini` |
 
 `LLM_API_KEY` works as a key for any provider. Keep the same model for both conditions in a comparison run;
-the model name is recorded in `outputs/eval/summary.json`.
+the model name is recorded in `outputs/eval/summary.json`. For `hf`, `LLM_LOAD_4BIT=1` loads models too big for
+the GPU in fp16 (needs `bitsandbytes`) and `LLM_BATCH` sets how many prompts are generated together (default 8).
+`hf` decodes greedily and the OpenAI-compatible providers use temperature 0, so those runs are reproducible
+(Anthropic uses the API's default temperature). API calls are retried with backoff on rate limits and transient
+server errors.
+
+## Ungrounded explanations (phase 3)
+The LLM never sees the image. It receives only an **evidence summary** filled from a fixed template: the
+verdict, P(fake), the decision threshold, a confidence level (high / moderate / borderline, by how far the score is
+past the threshold) and the top-3 regions with their concentration and share of heat. It must answer in a fixed
+JSON schema: a `claimed_region` and an `artifact_type` from fixed lists (the region set and the corpus taxonomy),
+plus 2–4 plain sentences. For a REAL verdict the artifact is `none` and the explanation says which regions the
+classifier relied on. Because the labels come from fixed lists, every claim can be checked against the heatmap
+automatically (phase 5).
+
+Each answer records whether it is valid (`schema_ok`: JSON with allowed labels), the `provider:model`, the
+latency and the raw reply. Phase 4 adds retrieved forensic passages to the same prompt; nothing else changes.
 
 ## Grounded vs. ungrounded evaluation
 ```bash
@@ -109,8 +129,9 @@ python app.py     # http://localhost:7860
 ```
 
 ## Running on Kaggle
-Current phase: **Grad-CAM++ explainability** (notebook 04), after model training and evaluation (01–03).
-LLM/RAG explanations, their evaluation and the demo are parked in `kaggle/later/`.
+Current phase: **ungrounded LLM explanations** (notebook 05), after model training and evaluation (01–03),
+Grad-CAM++ explainability (04) and choosing the main detector, EfficientNet-B0 (04b).
+The faithfulness evaluation and the demo are parked in `kaggle/later/`.
 
 Each notebook's saved output is added as an input to the next one (**Save Version → Save & Run All (Commit)**,
 then **Add Input → Your Work → Notebooks**).
@@ -123,6 +144,7 @@ then **Add Input → Your Work → Notebooks**).
 | `03_evaluate` | 01, 01b, 02 (+ copies of 02) | GPU T4 | comparison tables, significance tests, figures |
 | `04_gradcam` | 01, 01b, 02 (+ copies of 02) | GPU T4 | heatmap gallery, deletion/insertion faithfulness, region attribution |
 | `04b_model_selection` | 03, 04 (committed outputs) | None | accuracy vs. explainability charts, pre-declared scorecard to pick the main model |
+| `05_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0) | GPU T4 x2 | evidence summaries + ungrounded explanations from Qwen2.5-7B, Llama-3.1-8B and Mistral-7B, with prompts and raw replies; worked examples and pilot consistency rates |
 
 Training all seven models takes roughly 7–8 GPU-hours. Kaggle stops sessions at 12 h, so `02_train` skips models
 that would not fit; to be safe, run two copies of it with the model list split between them. `03_evaluate` collects

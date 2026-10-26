@@ -38,7 +38,7 @@ def analyse(image: Image.Image, compare: bool, crop: bool = True):
         raise gr.Error(f"No trained model found at {CHECKPOINT}. Run `python -m src.classifier.train` first.")
     exp = cam(cropper.crop_pil(image) if crop else image)
     verdict = f"## {'🔴 FAKE' if exp.label == 'fake' else '🟢 REAL'}  \nP(fake) = {exp.prob_fake:.3f}"
-    regions = {r: round(s, 3) for r, s in exp.top_regions}
+    regions = {r: round(exp.region_scores[r], 3) for r, _ in exp.top_regions}  # shares, in ranking order
     grounded = render(llm.explain(exp, grounded=True) if llm else None, exp)
     ungrounded = render(llm.explain(exp, grounded=False), exp) if llm and compare else ""
     return Image.fromarray(draw_bbox(exp.overlay, exp.bbox)), verdict, regions, grounded, ungrounded
