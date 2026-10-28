@@ -80,7 +80,9 @@ attribution for every model and manipulation, in `outputs/gradcam/`.
 
 ## Choosing the LLM
 The explanation step works with the Groq API (free tier; used for phase 3), Anthropic, OpenRouter, a local
-model, or any OpenAI-compatible server. Set these environment variables (on Kaggle, the notebooks set them for you):
+model, or any OpenAI-compatible server. Set these environment variables (on Kaggle, the notebooks set them for you).
+Locally you can instead put them in a `.env` file in the project root, one `NAME=value` per line (git-ignored;
+variables already set in the environment take precedence):
 
 | Provider | `LLM_PROVIDER` | Key | Default `LLM_MODEL` |
 |---|---|---|---|
@@ -272,7 +274,8 @@ A Gradio app (`app.py`, `src/demo/`) with two pages:
   an API key. The real label (dataset, manipulation method, and whether the detector was right) is shown with
   each result. It includes one or two images the detector gets wrong.
 
-The live page needs EfficientNet-B0's `best.pt` (default `outputs/checkpoints/best.pt`) and `GROQ_API_KEY`.
+The live page needs EfficientNet-B0's `best.pt` (default `outputs/checkpoints/best.pt`) and `GROQ_API_KEY` (set in
+the environment or in `.env`).
 The gallery (`outputs/demo/gallery/`) is built on Kaggle by notebook 08, or locally with
 `python -m src.demo.pipeline --data FF++=<face crops> CelebDF=<face crops>`.
 
