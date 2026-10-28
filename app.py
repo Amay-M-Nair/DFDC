@@ -33,17 +33,20 @@ def panel_values(res, waiting_for_llm: bool = False, prompt: str = ""):
 
 def panels(prompt: str):
     """The result components, in the order of panel_values(). prompt: what the empty verdict panel says."""
-    with gr.Row(equal_height=False):
-        verdict = gr.HTML(render.verdict(None, prompt))
-        heat = gr.HTML(render.regions(None))
+    verdict = gr.HTML(render.verdict(None, prompt))
     with gr.Row():
         kw = dict(interactive=False, buttons=["fullscreen"])
         face = gr.Image(label="Face", **kw)
         overlay = gr.Image(label="Grad-CAM++ heatmap", **kw)
-        regions = gr.Image(label="Region boxes · coloured by heat", **kw)
-    summary = gr.HTML(render.summary(None))
-    expl = gr.HTML(render.explanation(None))
+        regions = gr.Image(label="Region heat", **kw)
+    with gr.Row(equal_height=False):
+        with gr.Column(scale=3, min_width=320):
+            expl = gr.HTML(render.explanation(None))
+        with gr.Column(scale=2, min_width=280):
+            heat = gr.HTML(render.regions(None))
     cards = gr.HTML(render.cards(None))
+    with gr.Accordion("Evidence summary · the only input the LLM reads", open=False):
+        summary = gr.HTML(render.summary(None))
     return [verdict, face, overlay, regions, heat, summary, expl, cards]
 
 
@@ -54,7 +57,7 @@ def build(pipe: DemoPipeline, gallery: list):
         if not pipe.ready:
             raise gr.Error(f"No detector checkpoint at {pipe.checkpoint}: copy EfficientNet-B0's best.pt there "
                            f"or start with --checkpoint. The Gallery page works without it.")
-        yield (render.progress(-1, running=True), *panel_values(None, prompt="Analysing…"))
+        yield (render.progress(-1, running=True), *panel_values(None))
         for done, res, err in pipe.run(image, model):
             running = not err and done < len(render.STEPS) - 1
             yield (render.progress(done, err, res.timings, running), *panel_values(res, waiting_for_llm=running and done == 2))
@@ -82,14 +85,14 @@ def build(pipe: DemoPipeline, gallery: list):
                         steps = gr.HTML(render.progress())
                     with gr.Column(scale=8):
                         live = panels(LIVE_PROMPT)
-                go.click(run_live, [image, model], [steps, *live])
+                go.click(run_live, [image, model], [steps, *live], show_progress="hidden")
             with gr.Tab("Gallery · offline"):
                 if not gallery:
-                    gr.HTML(f"<div class='dd-banner'>No gallery yet: build it with notebook 08 or "
-                            f"<code>python -m src.demo.pipeline</code> (saved to {GALLERY_DIR}).</div>")
+                    gr.HTML(render.banner(f"No gallery yet: build it with notebook 08 or "
+                                          f"<code>python -m src.demo.pipeline</code> (saved to {GALLERY_DIR})."))
                 else:
-                    gr.HTML("<div class='dd-banner'>Test images analysed in advance by every model: no internet or "
-                            "API key needed. Pick one; its real label is shown with the result.</div>")
+                    gr.HTML(render.banner("Test images analysed in advance by every model: no internet or API key "
+                                          "needed. Pick one; its real label is shown with the result."))
                 with gr.Row(equal_height=False):
                     with gr.Column(scale=4, min_width=300):
                         thumbs = [(str(GALLERY_DIR / f"{e['key']}_face.png"), f"{e['truth']['dataset']} · {i + 1}")
@@ -101,16 +104,22 @@ def build(pipe: DemoPipeline, gallery: list):
                         chosen = gr.State(None)
                     with gr.Column(scale=8):
                         cached = panels(GALLERY_PROMPT)
-                pick.select(select_cached, [gmodel], [chosen, *cached])
-                gmodel.change(show_cached, [chosen, gmodel], cached)
-        gr.HTML("<div class='dd-muted' style='text-align:center;margin-top:8px'>The explanation describes where the "
-                "detector found evidence and what the literature says about such artefacts; it is not proof of "
-                "manipulation. The LLM never sees the image.</div>")
+                pick.select(select_cached, [gmodel], [chosen, *cached], show_progress="hidden")
+                gmodel.change(show_cached, [chosen, gmodel], cached, show_progress="hidden")
+        gr.HTML(render.note("The explanation describes where the detector found evidence and what the literature says "
+                            "about such artefacts; it is not proof of manipulation. The LLM never sees the image."))
     return demo
 
 
+# quiet, neutral block labels instead of the Soft theme's filled blue badges; a tinted page so white blocks stand out
 THEME = gr.themes.Soft(primary_hue="blue", neutral_hue="slate",
-                       font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"])
+                       font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"]).set(
+    body_background_fill="*neutral_50",
+    block_label_background_fill="*neutral_50", block_label_background_fill_dark="*neutral_900",
+    block_label_text_color="*neutral_600", block_label_text_color_dark="*neutral_300",
+    block_title_background_fill="transparent", block_title_background_fill_dark="transparent",
+    block_title_text_color="*neutral_700", block_title_text_color_dark="*neutral_200",
+    block_radius="*radius_lg")
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

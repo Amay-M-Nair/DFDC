@@ -270,8 +270,8 @@ A Gradio app (`app.py`, `src/demo/`) with two pages:
   Retrieve → Explain → Check, with each step's time, and the panels fill in as the steps finish:
   - the verdict with P(fake), the decision threshold and the confidence level
   - the face the detector saw, the Grad-CAM++ heatmap with the hottest area boxed, and every facial-region box
-    coloured by its heat concentration (blue = cold, red = hottest) and labelled with it, next to a list of all
-    regions ranked by heat. They show what made the detector call the face fake (or, for a REAL verdict, real)
+    coloured by its heat concentration (blue = cold, red = hottest) and labelled with it, and a list of all
+    regions ranked by heat (the prominent ones above a divider). They show what made the detector call the face fake (or, for a REAL verdict, real)
   - the demo uses **atomic regions** instead of the 9 combined ones of phases 2–5: eyes, nose, teeth, mouth, cheeks,
     hairline, forehead, chin, left/right jawline, face boundary and background. YuNet still finds and crops the
     face (the crop the detector was trained on); MediaPipe's 478-point face mesh then places every region on the
@@ -279,7 +279,7 @@ A Gradio app (`app.py`, `src/demo/`) with two pages:
     8% of the mouth's width), so a closed mouth gets no teeth region and no teeth cards; the hairline is a band
     above the mesh, which stops at the upper forehead. If MediaPipe finds no face, or is not installed, the boxes
     come from YuNet's 5 points (the combined boxes split into their parts) without teeth
-  - the evidence summary, which is all the LLM reads. Unlike phases 3–5, which list only the top 3 regions, the
+  - the evidence summary (a collapsed section under the results), which is all the LLM reads. Unlike phases 3–5, which list only the top 3 regions, the
     demo's summary lists every region with its concentration and share of heat, and names the **prominent
     regions**: every region whose evidence is at least half as concentrated as in the hottest one
     (`PROMINENT` in `src/xai/gradcam.py`). Card retrieval searches for the prominent regions (matched against the
