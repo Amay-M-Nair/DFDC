@@ -102,11 +102,14 @@ def normalise_citation(cid) -> str:
 
 
 class ForensicExplainer:
-    def __init__(self, retriever: Retriever = None):
-        """retriever: a shared Retriever; one is built on first grounded use if not given."""
+    def __init__(self, retriever: Retriever = None, summary_regions: int = 3):
+        """retriever: a shared Retriever; one is built on first grounded use if not given.
+        summary_regions: regions listed in the evidence summary, hottest first (None = every region, as in the
+        demo). Phases 3-5 were run with 3; keep it for comparable results."""
         self.client = providers.ChatClient()
         self.name = providers.describe()
         self._retriever = retriever
+        self.summary_regions = summary_regions
         self.taxonomy = sorted(artifact_taxonomy())
         self.system = SYSTEM.format(regions=json.dumps(REGIONS), artifacts=json.dumps(self.taxonomy))
 
@@ -122,7 +125,7 @@ class ForensicExplainer:
 
     def build_prompt(self, exp, grounded: bool):
         """(system prompt, user message, retrieved cards) for one Explanation."""
-        system, user = self.system, f"Evidence summary:\n{exp.describe()}"
+        system, user = self.system, f"Evidence summary:\n{exp.describe(self.summary_regions)}"
         docs = []
         if grounded:
             docs = self.retriever.retrieve(exp)

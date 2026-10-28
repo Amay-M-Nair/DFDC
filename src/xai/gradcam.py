@@ -173,7 +173,8 @@ class Explanation:
         return confidence_level(self.prob_fake, self.threshold)
 
     def describe(self, k: int = 3) -> str:
-        """Plain-text evidence summary passed to the LLM: filled from fixed templates, no model involved."""
+        """Plain-text evidence summary passed to the LLM: filled from fixed templates, no model involved.
+        k: how many regions to list, hottest first; None lists every region (the demo)."""
         x0, y0, x1, y1 = self.bbox
         parts = []
         for name, _ in self.top_regions[:k]:
@@ -183,9 +184,10 @@ class Explanation:
             else:
                 parts.append(f"{name} ({share})")
         method = {"gradcam++": "Grad-CAM++", "gradcam": "Grad-CAM"}.get(self.method, self.method)
+        where = "is most concentrated in" if k is not None else "in every region, most concentrated first"
         return (f"Classifier verdict: {self.label.upper()} (P(fake) = {self.prob_fake:.3f}; decision threshold "
                 f"{self.threshold:.3f}; {self.confidence} confidence). "
-                f"{method} evidence is most concentrated in: {'; '.join(parts)}. "
+                f"{method} evidence {where}: {'; '.join(parts)}. "
                 f"Hottest region bounding box (normalised x0,y0,x1,y1): "
                 f"({x0:.2f}, {y0:.2f}, {x1:.2f}, {y1:.2f}).")
 

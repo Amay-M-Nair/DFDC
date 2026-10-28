@@ -260,7 +260,9 @@ A Gradio app (`app.py`, `src/demo/`) with two pages:
   - the verdict with P(fake), the decision threshold and the confidence level
   - the face the detector saw, the Grad-CAM++ heatmap with the hottest area boxed, and the facial-region boxes
     with the top 3 regions numbered and listed by heat concentration
-  - the evidence summary, which is all the LLM reads
+  - the evidence summary, which is all the LLM reads. Unlike phases 3–5, which list only the top 3 regions, the
+    demo's summary lists all 9 regions with their concentration and share of heat. Card retrieval and the region
+    check still use the top 3
   - the evidence cards retrieved from the corpus (cited cards highlighted)
   - the grounded explanation: region, artefact, the sentences, the cited card ids, and a one-line check that the
     citations were given to the model, the artefact is backed by a cited card and the region is in the top 3

@@ -26,6 +26,7 @@ MODELS = {"openai/gpt-oss-120b": "GPT-OSS-120B", "openai/gpt-oss-20b": "GPT-OSS-
           "qwen/qwen3.8-27b": "Qwen3.8-27B (slower)"}
 MAX_TOKENS = {"qwen/qwen3.8-27b": 1000}   # Groq caps Qwen at 1K output tokens per minute
 STEPS = ("Detect", "Heatmap", "Retrieve", "Explain", "Check")
+SUMMARY_REGIONS = None                     # the LLM reads every region (phases 3-5 list only the top 3)
 GALLERY_DIR = OUTPUT_DIR / "demo" / "gallery"
 DISPLAY = 448                              # side of the images shown in the UI (the detector sees 224)
 TOP_COLORS = ((229, 72, 77), (245, 165, 36), (59, 130, 246))   # top-3 regions: red, amber, blue
@@ -131,7 +132,7 @@ class DemoPipeline:
             if not ForensicExplainer.available():
                 raise RuntimeError("No GROQ_API_KEY set: live explanations need a Groq key "
                                    "(the gallery works without one)")
-            self._llms[model] = ForensicExplainer(retriever=self.retriever)
+            self._llms[model] = ForensicExplainer(retriever=self.retriever, summary_regions=SUMMARY_REGIONS)
         return self._llms[model]
 
     def run(self, image: Image.Image, model: str, crop: bool = True):
@@ -157,7 +158,7 @@ class DemoPipeline:
             exp = self.explainer.explain(image, x, prob)
             res.top_regions = [(r, exp.region_concentration.get(r, 0.0), exp.region_scores.get(r, 0.0))
                                for r, _ in exp.top_regions[:3]]
-            res.region_source, res.summary = exp.region_source, exp.describe()
+            res.region_source, res.summary = exp.region_source, exp.describe(SUMMARY_REGIONS)
             res.overlay = _upscale(exp.overlay)
             x0, y0, x1, y1 = exp.bbox
             cv2.rectangle(res.overlay, (int(x0 * DISPLAY), int(y0 * DISPLAY)),
