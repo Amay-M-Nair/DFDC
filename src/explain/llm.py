@@ -17,15 +17,17 @@ from dataclasses import asdict, dataclass, field, replace
 from src.explain import providers
 from src.explain.corpus import artifact_taxonomy
 from src.explain.retriever import Retriever
-from src.xai.gradcam import all_regions
+from src.xai.gradcam import PROMINENT, all_regions
 
 REGIONS = all_regions()  # the combined 9 (phases 3-5); the demo uses all_regions(atomic=True)
 
-SYSTEM = """You are a digital-forensics assistant explaining the decision of a deepfake image classifier \
+ROLE = """You are a digital-forensics assistant explaining the decision of a deepfake image classifier \
 to a non-expert. You cannot see the image; you only receive the classifier's verdict, its confidence and a \
 summary of where its Grad-CAM++ evidence is concentrated. Base everything on that evidence. Be concise, \
 cautious and specific. Never claim certainty about the cause of an artefact, and hedge more when the \
-confidence is borderline.
+confidence is borderline."""
+
+SYSTEM = ROLE + """
 
 If the verdict is FAKE: name the facial region the evidence points to and the most plausible type of \
 manipulation artefact there.
@@ -38,14 +40,39 @@ Respond with ONLY a JSON object with these keys:
   "explanation": 2-4 plain-English sentences for a non-expert
   "citations": list of source ids you relied on (empty list if no sources were provided)"""
 
-GROUNDED_SUFFIX = """
+CARDS_INTRO = """
 
 Forensic reference cards follow the evidence summary. Each card has an id in square brackets, says what it is \
-about and lists the facial regions it applies to. Use them as your only source of forensic knowledge:
+about and lists the facial regions it applies to. Use them as your only source of forensic knowledge:"""
+
+GROUNDED_SUFFIX = CARDS_INTRO + """
 - If the verdict is FAKE, choose artifact_type only from the artefact cards, and only a type whose card lists \
 your claimed_region. Scope cards say when an artefact does not apply and limitation cards say what the evidence \
 cannot show; follow both.
 - Support every statement with the evidence summary or a card, and cite the ids of all cards you used."""
+
+# The demo (multi_region=True): one finding per prominent region instead of a single region
+MULTI_SYSTEM = ROLE + """
+
+The evidence summary names the prominent regions: every region whose evidence is at least {share} as \
+concentrated as in the hottest one. Explain every prominent region, hottest first, with one finding each.
+If the verdict is FAKE: for each prominent region, give the most plausible type of manipulation artefact there.
+If the verdict is REAL: set artifact_type to "none" in every finding and say what each region contributed to \
+judging the face authentic.
+
+Respond with ONLY a JSON object with these keys:
+  "findings": a list with one object per prominent region, hottest first, each with the keys
+      "region": one of {regions}
+      "artifact_type": one of {artifacts}
+      "citations": list of the source ids supporting this finding (empty list if no sources were provided)
+  "explanation": 3-5 plain-English sentences for a non-expert that cover every finding"""
+
+MULTI_GROUNDED_SUFFIX = CARDS_INTRO + """
+- If the verdict is FAKE, give each finding an artifact_type only from the artefact cards, and only a type whose \
+card lists that finding's region; cite that card in the finding. Scope cards say when an artefact does not apply \
+and limitation cards say what the evidence cannot show; follow both.
+- If the verdict is REAL, cite in each finding an authentic card that lists its region.
+- Support every statement with the evidence summary or a card."""
 
 REVISION = """
 
@@ -83,9 +110,15 @@ class LLMExplanation:
     raw: str = ""                # the model's raw reply, kept for auditing
     revised: bool = False        # verified condition: a revision was requested
     problems: list = field(default_factory=list)  # verified condition: what the checks found in the grounded answer
+    # multi_region (the demo): [{"region", "artifact_type", "citations"}], hottest first; claimed_region and
+    # artifact_type then repeat the first finding, and citations is every finding's citations
+    findings: list = field(default_factory=list)
 
     def to_dict(self):
-        return asdict(self)
+        d = asdict(self)
+        if not d["findings"]:  # single-region answers (phases 3-5) keep their saved format
+            del d["findings"]
+        return d
 
 
 def _parse_json(text: str) -> dict:
@@ -96,31 +129,40 @@ def _parse_json(text: str) -> dict:
     return json.loads(match.group(0))
 
 
+def _as_list(value) -> list:
+    """A reply field that should be a list: missing -> [], a single value -> [value]."""
+    return [] if value is None else value if isinstance(value, list) else [value]
+
+
 def normalise_citation(cid) -> str:
     """Card id as cited, without the brackets or quotes some models copy from the prompt ("[warp-affine]")."""
     return str(cid).strip().strip("[]'\"` ").strip()
 
 
 class ForensicExplainer:
-    def __init__(self, retriever: Retriever = None, summary_regions: int = 3, atomic: bool = False):
+    def __init__(self, retriever: Retriever = None, summary_regions: int = 3, atomic: bool = False,
+                 multi_region: bool = False):
         """retriever: a shared Retriever; one is built on first grounded use if not given.
         summary_regions: regions listed in the evidence summary, hottest first (None = every region, as in the
         demo). Phases 3-5 were run with 3; keep it for comparable results.
         atomic: atomic regions (teeth, hairline, jawline, ...; the demo) instead of the combined 9, in the region
-        list, the cards and the schema check. Phases 3-5 were run with the combined 9."""
+        list, the cards and the schema check. Phases 3-5 were run with the combined 9.
+        multi_region: one finding per prominent region (the demo; pair it with Retriever(prominent=True)) instead
+        of a single claimed region. The verified condition's checks only look at the first finding."""
         self.client = providers.ChatClient()
         self.name = providers.describe()
         self._retriever = retriever
         self.summary_regions = summary_regions
-        self.atomic = atomic
+        self.atomic, self.multi_region = atomic, multi_region
         self.regions = all_regions(atomic)
         self.taxonomy = sorted(artifact_taxonomy(atomic))
-        self.system = SYSTEM.format(regions=json.dumps(self.regions), artifacts=json.dumps(self.taxonomy))
+        self.system = (MULTI_SYSTEM if multi_region else SYSTEM).format(
+            regions=json.dumps(self.regions), artifacts=json.dumps(self.taxonomy), share=f"{PROMINENT:.0%}")
 
     @property
     def retriever(self) -> Retriever:
         if self._retriever is None:
-            self._retriever = Retriever(atomic=self.atomic)
+            self._retriever = Retriever(atomic=self.atomic, prominent=self.multi_region)
         return self._retriever
 
     @staticmethod
@@ -129,11 +171,12 @@ class ForensicExplainer:
 
     def build_prompt(self, exp, grounded: bool):
         """(system prompt, user message, retrieved cards) for one Explanation."""
-        system, user = self.system, f"Evidence summary:\n{exp.describe(self.summary_regions)}"
+        system = self.system
+        user = f"Evidence summary:\n{exp.describe(self.summary_regions, prominent=self.multi_region)}"
         docs = []
         if grounded:
             docs = self.retriever.retrieve(exp)
-            system += GROUNDED_SUFFIX
+            system += MULTI_GROUNDED_SUFFIX if self.multi_region else GROUNDED_SUFFIX
             user += "\n\nForensic reference cards:\n" + "\n\n".join(format_card(d, self.regions) for d in docs)
         return system, user, docs
 
@@ -141,14 +184,26 @@ class ForensicExplainer:
         out = LLMExplanation(condition, retrieved=[d.id for d in docs], llm=self.name, latency_s=latency, raw=raw)
         try:
             data = _parse_json(raw)
-            out.claimed_region = str(data.get("claimed_region", "")).strip()
-            out.artifact_type = str(data.get("artifact_type", "")).strip()
             out.explanation = str(data.get("explanation", "")).strip()
-            cites = data.get("citations", [])
-            cites = cites if isinstance(cites, list) else [cites]
-            out.citations = [c for c in map(normalise_citation, cites) if c]
-            out.schema_ok = (out.claimed_region in self.regions and out.artifact_type in self.taxonomy
-                             and bool(out.explanation))
+            if self.multi_region:
+                findings = data.get("findings", [])
+                out.findings = [{"region": str(f.get("region", "")).strip(),
+                                 "artifact_type": str(f.get("artifact_type", "")).strip(),
+                                 "citations": [c for c in map(normalise_citation, _as_list(f.get("citations"))) if c]}
+                                for f in (findings if isinstance(findings, list) else []) if isinstance(f, dict)]
+                if out.findings:
+                    out.claimed_region, out.artifact_type = out.findings[0]["region"], out.findings[0]["artifact_type"]
+                out.citations = list(dict.fromkeys(c for f in out.findings for c in f["citations"]))
+                out.schema_ok = bool(out.findings and out.explanation) and all(
+                    f["region"] in self.regions and f["artifact_type"] in self.taxonomy for f in out.findings)
+            else:
+                out.claimed_region = str(data.get("claimed_region", "")).strip()
+                out.artifact_type = str(data.get("artifact_type", "")).strip()
+                cites = data.get("citations", [])
+                cites = cites if isinstance(cites, list) else [cites]
+                out.citations = [c for c in map(normalise_citation, cites) if c]
+                out.schema_ok = (out.claimed_region in self.regions and out.artifact_type in self.taxonomy
+                                 and bool(out.explanation))
         except Exception as e:  # keep going; parse failures are counted, not hidden
             out.error = f"{type(e).__name__}: {e}"
         return out

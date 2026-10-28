@@ -17,7 +17,6 @@ import numpy as np
 from PIL import Image
 
 from src.config import CHECKPOINT, IMG_SIZE, OUTPUT_DIR
-from src.eval.verify import grounding_flags
 from src.explain.corpus import cards_by_id
 from src.explain.llm import ForensicExplainer, LLMExplanation
 from src.xai.gradcam import confidence_level
@@ -28,6 +27,7 @@ MAX_TOKENS = {"qwen/qwen3.8-27b": 1000}   # Groq caps Qwen at 1K output tokens p
 STEPS = ("Detect", "Heatmap", "Retrieve", "Explain", "Check")
 SUMMARY_REGIONS = None                     # the LLM reads every region (phases 3-5 list only the top 3)
 ATOMIC = True                              # atomic regions: teeth, hairline, jawline, ... (phases 2-5: the combined 9)
+MULTI_REGION = True                        # one finding per prominent region (phases 3-5: one claimed region)
 GALLERY_DIR = OUTPUT_DIR / "demo" / "gallery"
 DISPLAY = 448                              # side of the images shown in the UI (the detector sees 224)
 METHOD_NAMES = {"Deepfakes": "Deepfakes · face swap", "FaceSwap": "FaceSwap · face swap",
@@ -102,16 +102,31 @@ def draw_region_heat(face: np.ndarray, regions: dict, heat: list) -> np.ndarray:
 
 
 def check_answer(out: LLMExplanation, exp) -> dict:
-    """Deterministic checks of a grounded answer against the cards it was given (no NLI model)."""
+    """Deterministic checks of a grounded answer against the cards it was given (no NLI model). Per finding (a
+    single-region answer is one finding): where its region ranks by heat, whether it is prominent, and whether a
+    card cited for it backs it (FAKE: an artefact card of its type listing the region; REAL: artefact "none" and an
+    authentic card listing the region). Also which prominent regions the answer covers."""
     if not out.schema_ok:
         return {}
     given, cited = set(out.retrieved), list(dict.fromkeys(out.citations))
-    flags = grounding_flags(out, exp)
-    ranked = [r for r, _ in exp.top_regions]
+    cards, ranked, prominent = cards_by_id(exp.atomic), [r for r, _ in exp.top_regions], exp.prominent_regions()
+    rows = []
+    for f in out.findings or [{"region": out.claimed_region, "artifact_type": out.artifact_type,
+                               "citations": out.citations}]:
+        backing = [cards[c] for c in f["citations"] if c in given and c in cards]
+        if exp.label == "fake":
+            backed = any(c.kind == "artifact" and c.artifact_type == f["artifact_type"] and f["region"] in c.regions
+                         for c in backing)
+        else:
+            backed = f["artifact_type"] == "none" and any(c.kind == "authentic" and f["region"] in c.regions
+                                                          for c in backing)
+        rows.append({"region": f["region"], "artifact_type": f["artifact_type"], "citations": f["citations"],
+                     "rank": ranked.index(f["region"]) + 1 if f["region"] in ranked else None,
+                     "heat": exp.region_concentration.get(f["region"], 0.0),
+                     "prominent": f["region"] in prominent, "backed": backed})
+    named = {row["region"] for row in rows}
     return {"hits": [c for c in cited if c in given], "invented": [c for c in cited if c not in given],
-            "region_rank": ranked.index(out.claimed_region) + 1 if out.claimed_region in ranked else None,
-            "region_heat": exp.region_concentration.get(out.claimed_region, 0.0),
-            "artifact_backed": None if "artifact_not_in_cited_card" not in flags else not flags["artifact_not_in_cited_card"]}
+            "findings": rows, "prominent": prominent, "covered": [r for r in prominent if r in named]}
 
 
 class DemoPipeline:
@@ -136,7 +151,7 @@ class DemoPipeline:
         if self._retriever is None:
             from src.explain.retriever import Retriever
 
-            self._retriever = Retriever(atomic=ATOMIC)
+            self._retriever = Retriever(atomic=ATOMIC, prominent=MULTI_REGION)
         return self._retriever
 
     def llm(self, model: str, min_interval: float = 0) -> ForensicExplainer:
@@ -152,7 +167,7 @@ class DemoPipeline:
                 raise RuntimeError("No GROQ_API_KEY set: live explanations need a Groq key "
                                    "(the gallery works without one)")
             self._llms[model] = ForensicExplainer(retriever=self.retriever, summary_regions=SUMMARY_REGIONS,
-                                                  atomic=ATOMIC)
+                                                  atomic=ATOMIC, multi_region=MULTI_REGION)
         return self._llms[model]
 
     def run(self, image: Image.Image, model: str, crop: bool = True):
@@ -178,7 +193,8 @@ class DemoPipeline:
             exp = self.explainer.explain(image, x, prob)
             res.top_regions = [(r, exp.region_concentration.get(r, 0.0), exp.region_scores.get(r, 0.0))
                                for r, _ in exp.top_regions]
-            res.region_source, res.summary = exp.region_source, exp.describe(SUMMARY_REGIONS)
+            res.region_source = exp.region_source
+            res.summary = exp.describe(SUMMARY_REGIONS, prominent=MULTI_REGION)
             res.overlay = _upscale(exp.overlay)
             x0, y0, x1, y1 = exp.bbox
             cv2.rectangle(res.overlay, (int(x0 * DISPLAY), int(y0 * DISPLAY)),

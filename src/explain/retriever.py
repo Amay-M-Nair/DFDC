@@ -8,7 +8,9 @@
 3. Diversify: FAKE -> the best card of each of up to 3 artifact types, plus the scope cards of those types;
    REAL -> the best 2 authentic cards. Every result ends with one limitation card.
 
-The query is filled from the evidence by a fixed template (no LLM), so retrieval is deterministic.
+The demo (prominent=True) uses the prominent regions (Explanation.prominent_regions) instead of the top 3 and
+adds, for any prominent region no picked card lists, the best card that does, so every region it explains has
+evidence. The query is filled from the evidence by a fixed template (no LLM), so retrieval is deterministic.
 """
 import math
 import re
@@ -36,9 +38,10 @@ def card_text(d) -> str:
     return f"{about}. {d.kind}. Regions: {', '.join(d.regions)}. {d.pattern} pattern. {d.text}"
 
 
-def build_query(exp, k: int = 3):
-    """(query, top-k regions, pattern) for an Explanation: fixed template, no model involved."""
-    regions = [r for r, _ in exp.top_regions[:k]]
+def build_query(exp, k: int = 3, regions: list = None):
+    """(query, regions, pattern) for an Explanation: fixed template, no model involved.
+    regions: the regions to search for (default: the top k)."""
+    regions = regions or [r for r, _ in exp.top_regions[:k]]
     pattern = "central" if regions and regions[0] in CENTRAL else "outer"
     verdict = "fake, manipulated" if exp.label == "fake" else "real, authentic"
     query = (f"{verdict} face; detector evidence concentrated in {', '.join(regions)}; {pattern} pattern; "
@@ -93,17 +96,18 @@ def _ranks(scores: dict) -> dict:
 
 class Retriever:
     def __init__(self, rankers=RANKERS, n_types: int = 3, n_authentic: int = 2, filter_regions: bool = True,
-                 diversify: bool = True, encoder: DenseEncoder = None, atomic: bool = False):
+                 diversify: bool = True, encoder: DenseEncoder = None, atomic: bool = False, prominent: bool = False):
         """rankers: any of "region", "bm25", "dense". filter_regions/diversify=False give a plain top-n_types
         retriever (still verdict-aware) for comparison. `encoder` lets several retrievers share one model.
-        atomic: match cards by atomic regions (the demo; needs Explanations from Explainer(atomic=True))."""
+        atomic: match cards by atomic regions (the demo; needs Explanations from Explainer(atomic=True)).
+        prominent: search for the prominent regions, with a card for each (the demo), instead of the top 3."""
         unknown = set(rankers) - set(RANKERS)
         if unknown or not rankers:
             raise ValueError(f"rankers must be a non-empty subset of {RANKERS}, got {rankers}")
         self.docs = load_corpus(atomic)
         self.rankers = tuple(r for r in RANKERS if r in rankers)
         self.n_types, self.n_authentic = n_types, n_authentic
-        self.filter_regions, self.diversify = filter_regions, diversify
+        self.filter_regions, self.diversify, self.prominent = filter_regions, diversify, prominent
         self.bm25 = BM25([tokens(card_text(d)) for d in self.docs])
         self.encoder = self.card_emb = None
         if "dense" in self.rankers:
@@ -135,9 +139,18 @@ class Retriever:
             pool = [i for i in pool if set(self.docs[i].regions) & set(regions)] or pool
         return pool
 
+    def _cover(self, picked: list, ranked: list, regions: list) -> list:
+        """`picked` plus, for every region no picked card lists, the best-ranked card that lists it (if any)."""
+        for region in regions:
+            if not any(region in self.docs[i].regions for i in picked):
+                best = next((i for i in ranked if region in self.docs[i].regions), None)
+                if best is not None:
+                    picked.append(best)
+        return picked
+
     def retrieve(self, exp, k_regions: int = 3) -> list:
-        """Cards for one Explanation (verdict, top regions, confidence), in prompt order."""
-        query, regions, _ = build_query(exp, k_regions)
+        """Cards for one Explanation (verdict, top or prominent regions, confidence), in prompt order."""
+        query, regions, _ = build_query(exp, k_regions, exp.prominent_regions() if self.prominent else None)
         if exp.label == "fake":
             ranked = self._rank(self._pool("artifact", regions), query, regions)
             if self.diversify:
@@ -146,12 +159,18 @@ class Retriever:
                     if self.docs[i].artifact_type not in types and len(types) < self.n_types:
                         types.append(self.docs[i].artifact_type)
                         picked.append(i)
+                if self.prominent:
+                    picked = self._cover(picked, ranked, regions)
+                    types = list(dict.fromkeys(self.docs[i].artifact_type for i in picked))
                 picked += sorted((i for i, d in enumerate(self.docs) if d.kind == "scope" and d.artifact_type in types),
                                  key=lambda i: types.index(self.docs[i].artifact_type))
             else:
                 picked = ranked[:self.n_types]
         else:
-            picked = self._rank(self._pool("authentic", regions), query, regions)[:self.n_authentic]
+            ranked = self._rank(self._pool("authentic", regions), query, regions)
+            picked = ranked[:self.n_authentic]
+            if self.prominent:
+                picked = self._cover(picked, ranked, regions)
         limits = [i for i, d in enumerate(self.docs) if d.kind == "limitation"
                   and (not d.confidence or exp.confidence in d.confidence)]
         specific = [i for i in limits if exp.confidence in self.docs[i].confidence]

@@ -280,12 +280,16 @@ A Gradio app (`app.py`, `src/demo/`) with two pages:
     above the mesh, which stops at the upper forehead. If MediaPipe finds no face, or is not installed, the boxes
     come from YuNet's 5 points (the combined boxes split into their parts) without teeth
   - the evidence summary, which is all the LLM reads. Unlike phases 3–5, which list only the top 3 regions, the
-    demo's summary lists every region with its concentration and share of heat. Card retrieval still uses the
-    top 3, matched against the cards' atomic regions
+    demo's summary lists every region with its concentration and share of heat, and names the **prominent
+    regions**: every region whose evidence is at least half as concentrated as in the hottest one
+    (`PROMINENT` in `src/xai/gradcam.py`). Card retrieval searches for the prominent regions (matched against the
+    cards' atomic regions) and adds a card for any prominent region the others miss
   - the evidence cards retrieved from the corpus (cited cards highlighted)
-  - the grounded explanation: region, artefact, the sentences, the cited card ids, and a one-line check that the
-    citations were given to the model, the artefact is backed by a cited card and where the named region ranks
-    by heat (flagged when it is cooler than the image average)
+  - the grounded explanation: one **finding per prominent region**, hottest first, each with its own artefact type
+    and the cards cited for it, then sentences that cover every finding. Phases 3–5 name a single region. Each
+    finding shows where its region ranks by heat and whether a card cited for it backs it (FAKE: an artefact card
+    of that type listing the region; REAL: an authentic card listing it). A one-line check says how many prominent
+    regions the answer covers, how many findings are backed, and whether it cited ids it was not given
 - **Gallery · offline.** Test images analysed in advance by every model, so this page works without internet or
   an API key. The real label (dataset, manipulation method, and whether the detector was right) is shown with
   each result. It includes one or two images the detector gets wrong.

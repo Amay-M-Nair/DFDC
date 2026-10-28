@@ -178,26 +178,43 @@ def explanation(res, waiting: bool = False) -> str:
     hits, invented = set(res.check.get("hits", [])), set(res.check.get("invented", []))
     cites = "".join(f"<span class='dd-chip dd-mono' style='border-color:"
                     f"{'#3b82f6' if c in hits else '#e5484d'}'>{escape(c)}</span>" for c in dict.fromkeys(a.citations))
-    artefact = ("<span class='dd-chip' style='border-color:#30a46c'>no artefact: judged authentic</span>"
-                if a.artifact_type == "none" else
-                f"<span class='dd-chip' style='border-color:#e5484d'>artefact: {escape(nice(a.artifact_type))}</span>")
-    checks = [f"cites {len(hits)} of the {len(res.cards)} cards it was given"]
+    # one row per finding; answers saved before findings existed become a single row
+    rows = res.check.get("findings") or [{"region": a.claimed_region, "artifact_type": a.artifact_type,
+                                          "citations": a.citations, "rank": res.check.get("region_rank"),
+                                          "heat": res.check.get("region_heat", 0.0), "prominent": None,
+                                          "backed": res.check.get("artifact_backed")}]
+    hottest = max((c for _, c, _ in res.top_regions), default=1) or 1
+    lines = []
+    for f in rows:
+        artefact = ("<span class='dd-chip' style='border-color:#30a46c'>no artefact: judged authentic</span>"
+                    if f["artifact_type"] == "none" else
+                    f"<span class='dd-chip' style='border-color:#e5484d'>{escape(nice(f['artifact_type']))}</span>")
+        where = (f"#{f['rank']} of {len(res.top_regions)} by heat · {f['heat']:.1f}×" if f["rank"]
+                 else "not one of this face's regions")
+        if f["prominent"] is False:
+            where += " · <span class='dd-bad'>not prominent</span>"
+        mark = ("" if f["backed"] is None else "<span class='dd-ok'>✓ backed</span>" if f["backed"]
+                else "<span class='dd-bad'>✕ not backed</span>")
+        own = ", ".join(escape(c) for c in f["citations"]) or "none"
+        lines.append(f"<div class='dd-region'><span class='dd-swatch' style='background:"
+                     f"{_rgb(heat_color(f['heat'], hottest))}'></span><div><b>{escape(f['region'])}</b> {artefact}"
+                     f"<div class='dd-muted'>{where} · cites <span class='dd-mono'>{own}</span></div></div>"
+                     f"<span>{mark}</span></div>")
+    checks = []
+    if res.check.get("prominent"):
+        covered, prominent = res.check.get("covered", []), res.check["prominent"]
+        ok = "dd-ok" if len(covered) == len(prominent) else "dd-bad"
+        checks.append(f"<span class='{ok}'>covers {len(covered)} of {len(prominent)} prominent regions</span>")
+    if any(f["backed"] is not None for f in rows):
+        backed = sum(bool(f["backed"]) for f in rows)
+        ok = "dd-ok" if backed == len(rows) else "dd-bad"
+        checks.append(f"<span class='{ok}'>{backed} of {len(rows)} finding(s) backed by a cited card</span>")
+    checks.append(f"cites {len(hits)} of the {len(res.cards)} cards it was given")
     if invented:
         checks.append(f"<span class='dd-bad'>{len(invented)} id(s) not given to it</span>")
-    if res.check.get("artifact_backed") is not None:
-        checks.append(("<span class='dd-ok'>✓</span> artefact backed by a cited card" if res.check["artifact_backed"]
-                       else "<span class='dd-bad'>✕</span> artefact not backed by a cited card"))
-    rank = res.check.get("region_rank")
-    if rank:
-        where = f"named region is #{rank} of {len(res.top_regions)} by heat"
-        checks.append(f"<span class='dd-ok'>✓</span> {where}" if res.check.get("region_heat", 0) >= 1
-                      else f"<span class='dd-bad'>✕</span> {where}, cooler than the image average")
-    elif "region_rank" in res.check:
-        checks.append("<span class='dd-bad'>✕</span> named region is not one of this face's regions")
     latency = f" · {res.timings['Explain']:.1f} s" if "Explain" in res.timings else ""
     return (f"<div class='dd-card'><div class='dd-title'>Grounded explanation · {escape(model)}{latency}</div>"
-            f"<span class='dd-chip'>region: {escape(a.claimed_region)}</span>{artefact}"
-            f"<div class='dd-expl'>{escape(a.explanation)}</div>"
+            f"{''.join(lines)}<div class='dd-expl'>{escape(a.explanation)}</div>"
             f"<div class='dd-muted'>Sources cited: {cites or 'none'}</div>"
             f"<div class='dd-check'>{' · '.join(checks)}</div></div>")
 

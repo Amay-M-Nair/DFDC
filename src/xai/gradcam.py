@@ -81,6 +81,7 @@ MESH_OUTER_LIPS = (0, 17, 37, 39, 40, 61, 84, 91, 146, 181, 185, 267, 269, 270, 
 MESH_INNER_LIPS = (13, 14, 78, 80, 81, 82, 87, 88, 95, 178, 191, 308, 310, 311, 312, 317, 318, 324, 402, 415)
 MESH_TOP, MESH_CHIN = 10, 152
 MOUTH_OPEN = 0.08   # inner-lip gap / inner mouth width above which the mouth counts as open (teeth may show)
+PROMINENT = 0.5     # demo: a region is prominent when its evidence is at least half as concentrated as the hottest's
 
 
 def mesh_regions(pts: np.ndarray, w: int, h: int) -> dict:
@@ -294,9 +295,15 @@ class Explanation:
         """True when the regions are the atomic ones (ATOMIC_FACE_REGIONS)."""
         return background_name(self.regions) == ATOMIC_BACKGROUND
 
-    def describe(self, k: int = 3) -> str:
+    def prominent_regions(self, ratio: float = PROMINENT) -> list:
+        """Regions whose score is at least `ratio` times the hottest one's, hottest first (never empty)."""
+        ranked = self.top_regions
+        return [r for r, s in ranked if s >= ratio * ranked[0][1]] or [ranked[0][0]]
+
+    def describe(self, k: int = 3, prominent: bool = False) -> str:
         """Plain-text evidence summary passed to the LLM: filled from fixed templates, no model involved.
-        k: how many regions to list, hottest first; None lists every region (the demo)."""
+        k: how many regions to list, hottest first; None lists every region (the demo).
+        prominent: also name the prominent regions (the demo, where the LLM explains each of them)."""
         x0, y0, x1, y1 = self.bbox
         parts = []
         for name, _ in self.top_regions[:k]:
@@ -307,11 +314,13 @@ class Explanation:
                 parts.append(f"{name} ({share})")
         method = {"gradcam++": "Grad-CAM++", "gradcam": "Grad-CAM"}.get(self.method, self.method)
         where = "is most concentrated in" if k is not None else "in every region, most concentrated first"
+        named = (f" Prominent regions (evidence at least {PROMINENT:.0%} as concentrated as in the hottest region): "
+                 f"{', '.join(self.prominent_regions())}.") if prominent else ""
         return (f"Classifier verdict: {self.label.upper()} (P(fake) = {self.prob_fake:.3f}; decision threshold "
                 f"{self.threshold:.3f}; {self.confidence} confidence). "
                 f"{method} evidence {where}: {'; '.join(parts)}. "
                 f"Hottest region bounding box (normalised x0,y0,x1,y1): "
-                f"({x0:.2f}, {y0:.2f}, {x1:.2f}, {y1:.2f}).")
+                f"({x0:.2f}, {y0:.2f}, {x1:.2f}, {y1:.2f}).{named}")
 
 
 class Explainer:
