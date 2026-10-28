@@ -20,7 +20,7 @@ from src.config import CHECKPOINT, IMG_SIZE, OUTPUT_DIR
 from src.eval.verify import grounding_flags
 from src.explain.corpus import cards_by_id
 from src.explain.llm import ForensicExplainer, LLMExplanation
-from src.xai.gradcam import BACKGROUND, confidence_level
+from src.xai.gradcam import confidence_level
 
 MODELS = {"openai/gpt-oss-120b": "GPT-OSS-120B", "openai/gpt-oss-20b": "GPT-OSS-20B",
           "qwen/qwen3.8-27b": "Qwen3.8-27B (slower)"}
@@ -29,7 +29,6 @@ STEPS = ("Detect", "Heatmap", "Retrieve", "Explain", "Check")
 SUMMARY_REGIONS = None                     # the LLM reads every region (phases 3-5 list only the top 3)
 GALLERY_DIR = OUTPUT_DIR / "demo" / "gallery"
 DISPLAY = 448                              # side of the images shown in the UI (the detector sees 224)
-TOP_COLORS = ((229, 72, 77), (245, 165, 36), (59, 130, 246))   # top-3 regions: red, amber, blue
 METHOD_NAMES = {"Deepfakes": "Deepfakes · face swap", "FaceSwap": "FaceSwap · face swap",
                 "FaceShifter": "FaceShifter · face swap", "Face2Face": "Face2Face · re-enactment",
                 "NeuralTextures": "NeuralTextures · re-enactment", "CelebDF": "Celeb-DF · face swap",
@@ -40,13 +39,13 @@ METHOD_NAMES = {"Deepfakes": "Deepfakes · face swap", "FaceSwap": "FaceSwap · 
 class DemoResult:
     face: np.ndarray = None          # what the detector saw, DISPLAY x DISPLAY RGB
     overlay: np.ndarray = None       # Grad-CAM++ overlay with the hottest-region box
-    regions: np.ndarray = None       # face with the facial-region boxes, top 3 numbered
+    regions: np.ndarray = None       # face with every facial-region box, coloured and labelled by heat
     prob_fake: float = None
     label: str = ""
     threshold: float = None
     confidence: str = ""
     face_found: bool = None
-    top_regions: list = field(default_factory=list)   # [(region, concentration, share)] for the top 3
+    top_regions: list = field(default_factory=list)   # [(region, concentration, share)] for every region, hottest first
     region_source: str = ""
     summary: str = ""
     cards: list = field(default_factory=list)          # ids of the retrieved cards, in retrieval order
@@ -68,19 +67,27 @@ def _box(img, box, color, width):
     return x0, y0
 
 
-def draw_top_regions(face: np.ndarray, regions: dict, top: list) -> np.ndarray:
-    """Every facial-region box in thin grey, the top 3 thick and numbered in their colours."""
+def heat_color(conc: float, hottest: float) -> tuple:
+    """RGB for a region's heat concentration on the heatmap's own scale (jet: blue = cold, red = the hottest).
+    Uses the middle of jet, blue to red, since its dark navy and maroon ends are hard to see on the dark theme."""
+    level = int((0.125 + 0.75 * np.clip(conc / (hottest or 1), 0, 1)) * 255)
+    return tuple(int(v) for v in cv2.applyColorMap(np.uint8([[level]]), cv2.COLORMAP_JET)[0, 0][::-1])
+
+
+def draw_region_heat(face: np.ndarray, regions: dict, heat: list) -> np.ndarray:
+    """Every facial-region box coloured by its heat concentration and labelled with it; hotter boxes are thicker
+    and drawn on top, and the labels go over all boxes. heat: [(region, concentration, share)], hottest first."""
     out = face.copy()
-    names = [r for r, _, _ in top]
-    for name, box in regions.items():
-        if name not in names:
-            _box(out, box, (200, 200, 200), 1)
-    for i, name in reversed(list(enumerate(names))):
-        if name == BACKGROUND or name not in regions:
-            continue
-        x0, y0 = _box(out, regions[name], TOP_COLORS[i], 3)
-        cv2.rectangle(out, (x0, y0), (x0 + 22, y0 + 22), TOP_COLORS[i], -1)
-        cv2.putText(out, str(i + 1), (x0 + 5, y0 + 17), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+    hottest = max((c for _, c, _ in heat), default=1) or 1
+    boxed = [(name, conc, heat_color(conc, hottest)) for name, conc, _ in reversed(heat)
+             if name in regions]  # coldest first; the background has no box
+    corners = [_box(out, regions[name], color, 1 + round(3 * conc / hottest)) for name, conc, color in boxed]
+    for (_, conc, color), (x0, y0) in zip(boxed, corners):
+        label = f"{conc:.1f}x"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        ink = (0, 0, 0) if 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2] > 150 else (255, 255, 255)
+        cv2.rectangle(out, (x0, y0), (x0 + tw + 8, y0 + th + 8), color, -1)
+        cv2.putText(out, label, (x0 + 4, y0 + th + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, ink, 1, cv2.LINE_AA)
     return out
 
 
@@ -90,8 +97,10 @@ def check_answer(out: LLMExplanation, exp) -> dict:
         return {}
     given, cited = set(out.retrieved), list(dict.fromkeys(out.citations))
     flags = grounding_flags(out, exp)
+    ranked = [r for r, _ in exp.top_regions]
     return {"hits": [c for c in cited if c in given], "invented": [c for c in cited if c not in given],
-            "region_in_top3": out.claimed_region in [r for r, _ in exp.top_regions[:3]],
+            "region_rank": ranked.index(out.claimed_region) + 1 if out.claimed_region in ranked else None,
+            "region_heat": exp.region_concentration.get(out.claimed_region, 0.0),
             "artifact_backed": None if "artifact_not_in_cited_card" not in flags else not flags["artifact_not_in_cited_card"]}
 
 
@@ -157,13 +166,13 @@ class DemoPipeline:
             step, t0 = next(steps), time.time()
             exp = self.explainer.explain(image, x, prob)
             res.top_regions = [(r, exp.region_concentration.get(r, 0.0), exp.region_scores.get(r, 0.0))
-                               for r, _ in exp.top_regions[:3]]
+                               for r, _ in exp.top_regions]
             res.region_source, res.summary = exp.region_source, exp.describe(SUMMARY_REGIONS)
             res.overlay = _upscale(exp.overlay)
             x0, y0, x1, y1 = exp.bbox
             cv2.rectangle(res.overlay, (int(x0 * DISPLAY), int(y0 * DISPLAY)),
                           (int(x1 * DISPLAY) - 1, int(y1 * DISPLAY) - 1), (255, 255, 255), 2, cv2.LINE_AA)
-            res.regions = draw_top_regions(res.face, exp.regions, res.top_regions)
+            res.regions = draw_region_heat(res.face, exp.regions, res.top_regions)
             res.timings[step] = time.time() - t0
             yield 1, res, ""
 

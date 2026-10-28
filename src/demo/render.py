@@ -1,7 +1,7 @@
 """HTML for the demo panels (app.py). Colours come from Gradio's theme variables, so light and dark mode work."""
 from html import escape
 
-from src.demo.pipeline import MODELS, METHOD_NAMES, STEPS, TOP_COLORS
+from src.demo.pipeline import MODELS, METHOD_NAMES, STEPS, heat_color
 from src.explain.corpus import cards_by_id
 from src.xai.gradcam import BACKGROUND
 
@@ -46,11 +46,11 @@ CSS = """
 .dd-gauge > i {position: absolute; top: -4px; width: 2px; height: 16px; background: var(--body-text-color);}
 .dd-truth {margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border-color-primary); font-size: 0.9rem;}
 
-/* top-3 regions */
-.dd-region {display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: center; margin: 8px 0;}
-.dd-num {width: 22px; height: 22px; border-radius: 5px; color: #fff; font-weight: 700; font-size: 0.8rem;
-         display: inline-flex; align-items: center; justify-content: center;}
-.dd-bar {height: 6px; border-radius: 3px; margin-top: 4px;}
+/* region heat */
+.dd-region {display: grid; grid-template-columns: 18px 1fr; gap: 8px; align-items: center; margin: 5px 0;
+            font-size: 0.88rem;}
+.dd-swatch {width: 14px; height: 14px; border-radius: 4px;}
+.dd-bar {height: 5px; border-radius: 3px; margin-top: 3px;}
 
 /* explanation and cards */
 .dd-expl {font-size: 1.02rem; line-height: 1.6; margin: 10px 0;}
@@ -138,17 +138,17 @@ def verdict(res, prompt: str = "") -> str:
 
 def regions(res) -> str:
     if res is None or not res.top_regions:
-        return placeholder("The regions the detector relied on most will appear here.")
-    top = max(c for _, c, _ in res.top_regions) or 1
+        return placeholder("Every facial region, ranked by how much of the detector's evidence it holds, will appear here.")
+    hottest = max(c for _, c, _ in res.top_regions) or 1
     rows = []
-    for i, (name, conc, share) in enumerate(res.top_regions):
-        c = _rgb(TOP_COLORS[i])
+    for name, conc, share in res.top_regions:
+        c = _rgb(heat_color(conc, hottest))
         boxed = "" if name != BACKGROUND else " <span class='dd-muted'>(outside the face boxes)</span>"
-        rows.append(f"<div class='dd-region'><span class='dd-num' style='background:{c}'>{i + 1}</span><div>"
+        rows.append(f"<div class='dd-region'><span class='dd-swatch' style='background:{c}'></span><div>"
                     f"<b>{escape(name)}</b>{boxed} <span class='dd-muted'>· {conc:.1f}× the image's average heat · "
-                    f"{share:.0%} of all heat</span><div class='dd-bar' style='width:{conc / top * 100:.0f}%;"
+                    f"{share:.0%} of all heat</span><div class='dd-bar' style='width:{conc / hottest * 100:.0f}%;"
                     f"background:{c}'></div></div></div>")
-    title = "Where the detector looked: top 3 regions"
+    title = f"What made it look {res.label}: every region by heat"
     src = "" if res.region_source == "landmarks" else \
         "<div class='dd-muted'>Region boxes from a fixed grid (no facial landmarks found).</div>"
     return f"<div class='dd-card'><div class='dd-title'>{title}</div>{''.join(rows)}{src}</div>"
@@ -184,8 +184,11 @@ def explanation(res, waiting: bool = False) -> str:
     if res.check.get("artifact_backed") is not None:
         checks.append(("<span class='dd-ok'>✓</span> artefact backed by a cited card" if res.check["artifact_backed"]
                        else "<span class='dd-bad'>✕</span> artefact not backed by a cited card"))
-    checks.append(("<span class='dd-ok'>✓</span> region in the heatmap's top 3" if res.check.get("region_in_top3")
-                   else "<span class='dd-bad'>✕</span> region not in the heatmap's top 3"))
+    rank = res.check.get("region_rank")
+    if rank:
+        where = f"named region is #{rank} of {len(res.top_regions)} by heat"
+        checks.append(f"<span class='dd-ok'>✓</span> {where}" if res.check.get("region_heat", 0) >= 1
+                      else f"<span class='dd-bad'>✕</span> {where}, cooler than the image average")
     latency = f" · {res.timings['Explain']:.1f} s" if "Explain" in res.timings else ""
     return (f"<div class='dd-card'><div class='dd-title'>Grounded explanation · {escape(model)}{latency}</div>"
             f"<span class='dd-chip'>region: {escape(a.claimed_region)}</span>{artefact}"

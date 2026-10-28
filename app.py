@@ -35,16 +35,16 @@ def panels(prompt: str):
     """The result components, in the order of panel_values(). prompt: what the empty verdict panel says."""
     with gr.Row(equal_height=False):
         verdict = gr.HTML(render.verdict(None, prompt))
-        top3 = gr.HTML(render.regions(None))
+        heat = gr.HTML(render.regions(None))
     with gr.Row():
         kw = dict(interactive=False, buttons=["fullscreen"])
         face = gr.Image(label="Face", **kw)
         overlay = gr.Image(label="Grad-CAM++ heatmap", **kw)
-        regions = gr.Image(label="Top-3 regions", **kw)
+        regions = gr.Image(label="Region boxes · coloured by heat", **kw)
     summary = gr.HTML(render.summary(None))
     expl = gr.HTML(render.explanation(None))
     cards = gr.HTML(render.cards(None))
-    return [verdict, face, overlay, regions, top3, summary, expl, cards]
+    return [verdict, face, overlay, regions, heat, summary, expl, cards]
 
 
 def build(pipe: DemoPipeline, gallery: list):

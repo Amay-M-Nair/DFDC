@@ -258,14 +258,16 @@ A Gradio app (`app.py`, `src/demo/`) with two pages:
   GPT-OSS-20B or Qwen3.8-27B on Groq). A progress strip under the upload box lights up Detect → Heatmap →
   Retrieve → Explain → Check, with each step's time, and the panels fill in as the steps finish:
   - the verdict with P(fake), the decision threshold and the confidence level
-  - the face the detector saw, the Grad-CAM++ heatmap with the hottest area boxed, and the facial-region boxes
-    with the top 3 regions numbered and listed by heat concentration
+  - the face the detector saw, the Grad-CAM++ heatmap with the hottest area boxed, and every facial-region box
+    coloured by its heat concentration (blue = cold, red = hottest) and labelled with it, next to a list of all 9
+    regions ranked by heat. They show what made the detector call the face fake (or, for a REAL verdict, real)
   - the evidence summary, which is all the LLM reads. Unlike phases 3–5, which list only the top 3 regions, the
-    demo's summary lists all 9 regions with their concentration and share of heat. Card retrieval and the region
-    check still use the top 3
+    demo's summary lists all 9 regions with their concentration and share of heat. Card retrieval still uses the
+    top 3
   - the evidence cards retrieved from the corpus (cited cards highlighted)
   - the grounded explanation: region, artefact, the sentences, the cited card ids, and a one-line check that the
-    citations were given to the model, the artefact is backed by a cited card and the region is in the top 3
+    citations were given to the model, the artefact is backed by a cited card and where the named region ranks
+    by heat (flagged when it is cooler than the image average)
 - **Gallery · offline.** Test images analysed in advance by every model, so this page works without internet or
   an API key. The real label (dataset, manipulation method, and whether the detector was right) is shown with
   each result. It includes one or two images the detector gets wrong.
