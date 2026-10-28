@@ -20,7 +20,7 @@ from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 from src.explain.corpus import load_corpus
 
 RANKERS = ("region", "bm25", "dense")
-CENTRAL = {"left eye", "right eye", "nose", "mouth / teeth"}
+CENTRAL = {"left eye", "right eye", "nose", "mouth / teeth", "teeth", "mouth"}
 DENSE_MODEL = "BAAI/bge-small-en-v1.5"
 QUERY_PREFIX = "Represent this sentence for searching relevant passages: "  # bge's instruction for short queries
 RRF_K = 60
@@ -93,13 +93,14 @@ def _ranks(scores: dict) -> dict:
 
 class Retriever:
     def __init__(self, rankers=RANKERS, n_types: int = 3, n_authentic: int = 2, filter_regions: bool = True,
-                 diversify: bool = True, encoder: DenseEncoder = None):
+                 diversify: bool = True, encoder: DenseEncoder = None, atomic: bool = False):
         """rankers: any of "region", "bm25", "dense". filter_regions/diversify=False give a plain top-n_types
-        retriever (still verdict-aware) for comparison. `encoder` lets several retrievers share one model."""
+        retriever (still verdict-aware) for comparison. `encoder` lets several retrievers share one model.
+        atomic: match cards by atomic regions (the demo; needs Explanations from Explainer(atomic=True))."""
         unknown = set(rankers) - set(RANKERS)
         if unknown or not rankers:
             raise ValueError(f"rankers must be a non-empty subset of {RANKERS}, got {rankers}")
-        self.docs = load_corpus()
+        self.docs = load_corpus(atomic)
         self.rankers = tuple(r for r in RANKERS if r in rankers)
         self.n_types, self.n_authentic = n_types, n_authentic
         self.filter_regions, self.diversify = filter_regions, diversify

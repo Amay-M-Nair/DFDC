@@ -3,7 +3,7 @@
 ## mouth-teeth-detail
 artifact: teeth_mouth_artifacts
 kind: artifact
-regions: mouth / teeth
+regions: teeth
 pattern: central
 families: swap_autoencoder, reenact_graphics
 source: Matern, Riess & Stamminger, "Exploiting Visual Artifacts to Expose Deepfakes and Face Manipulations", WACV Workshops 2019
@@ -14,7 +14,7 @@ Matern et al. observed that manipulated faces often show the teeth as a single w
 ## mouth-neuraltextures
 artifact: teeth_mouth_artifacts
 kind: artifact
-regions: mouth / teeth, chin / jawline
+regions: mouth, teeth, chin
 pattern: central
 families: reenact_neural
 source: Rössler et al., "FaceForensics++", ICCV 2019; Thies, Zollhöfer & Nießner, "Deferred Neural Rendering: Image Synthesis using Neural Textures", ACM TOG 2019
@@ -25,7 +25,7 @@ In FaceForensics++, the NeuralTextures manipulations change only the facial expr
 ## mouth-face2face
 artifact: teeth_mouth_artifacts
 kind: artifact
-regions: mouth / teeth
+regions: teeth
 pattern: central
 families: reenact_graphics
 source: Thies et al., "Face2Face: Real-time Face Capture and Reenactment of RGB Videos", CVPR 2016

@@ -16,7 +16,7 @@ Grad-CAM highlights the image regions that support the class the model predicted
 ## auth-skin-texture
 artifact: none
 kind: authentic
-regions: left cheek, right cheek, forehead / hairline, chin / jawline
+regions: left cheek, right cheek, forehead, chin, left jawline, right jawline
 pattern: outer
 families: any
 source: Liu et al., "Global Texture Enhancement for Fake Face Detection in the Wild", CVPR 2020
@@ -38,7 +38,7 @@ In a real photograph both eyes see the same scene, so the reflections of light s
 ## auth-mouth-detail
 artifact: none
 kind: authentic
-regions: mouth / teeth
+regions: teeth
 pattern: central
 families: any
 source: Matern, Riess & Stamminger, "Exploiting Visual Artifacts to Expose Deepfakes and Face Manipulations", WACV Workshops 2019

@@ -17,9 +17,9 @@ from dataclasses import asdict, dataclass, field, replace
 from src.explain import providers
 from src.explain.corpus import artifact_taxonomy
 from src.explain.retriever import Retriever
-from src.xai.gradcam import BACKGROUND, FACE_REGIONS
+from src.xai.gradcam import all_regions
 
-REGIONS = list(FACE_REGIONS) + [BACKGROUND]
+REGIONS = all_regions()  # the combined 9 (phases 3-5); the demo uses all_regions(atomic=True)
 
 SYSTEM = """You are a digital-forensics assistant explaining the decision of a deepfake image classifier \
 to a non-expert. You cannot see the image; you only receive the classifier's verdict, its confidence and a \
@@ -62,9 +62,9 @@ CARD_ABOUT = {"artifact": "artefact: {}", "scope": "scope of: {}", "limitation":
               "authentic": "authentic cues"}
 
 
-def format_card(d) -> str:
-    """One evidence card as the LLM sees it."""
-    regions = "any" if set(REGIONS) <= set(d.regions) else ", ".join(d.regions)
+def format_card(d, all_names=REGIONS) -> str:
+    """One evidence card as the LLM sees it. all_names: every region name ("any" when the card lists them all)."""
+    regions = "any" if set(all_names) <= set(d.regions) else ", ".join(d.regions)
     return f"[{d.id}] {CARD_ABOUT[d.kind].format(d.artifact_type)} | regions: {regions}\n{d.text} ({d.citation})"
 
 
@@ -102,21 +102,25 @@ def normalise_citation(cid) -> str:
 
 
 class ForensicExplainer:
-    def __init__(self, retriever: Retriever = None, summary_regions: int = 3):
+    def __init__(self, retriever: Retriever = None, summary_regions: int = 3, atomic: bool = False):
         """retriever: a shared Retriever; one is built on first grounded use if not given.
         summary_regions: regions listed in the evidence summary, hottest first (None = every region, as in the
-        demo). Phases 3-5 were run with 3; keep it for comparable results."""
+        demo). Phases 3-5 were run with 3; keep it for comparable results.
+        atomic: atomic regions (teeth, hairline, jawline, ...; the demo) instead of the combined 9, in the region
+        list, the cards and the schema check. Phases 3-5 were run with the combined 9."""
         self.client = providers.ChatClient()
         self.name = providers.describe()
         self._retriever = retriever
         self.summary_regions = summary_regions
-        self.taxonomy = sorted(artifact_taxonomy())
-        self.system = SYSTEM.format(regions=json.dumps(REGIONS), artifacts=json.dumps(self.taxonomy))
+        self.atomic = atomic
+        self.regions = all_regions(atomic)
+        self.taxonomy = sorted(artifact_taxonomy(atomic))
+        self.system = SYSTEM.format(regions=json.dumps(self.regions), artifacts=json.dumps(self.taxonomy))
 
     @property
     def retriever(self) -> Retriever:
         if self._retriever is None:
-            self._retriever = Retriever()
+            self._retriever = Retriever(atomic=self.atomic)
         return self._retriever
 
     @staticmethod
@@ -130,7 +134,7 @@ class ForensicExplainer:
         if grounded:
             docs = self.retriever.retrieve(exp)
             system += GROUNDED_SUFFIX
-            user += "\n\nForensic reference cards:\n" + "\n\n".join(format_card(d) for d in docs)
+            user += "\n\nForensic reference cards:\n" + "\n\n".join(format_card(d, self.regions) for d in docs)
         return system, user, docs
 
     def _parse(self, raw: str, condition: str, docs, latency: float) -> LLMExplanation:
@@ -143,7 +147,7 @@ class ForensicExplainer:
             cites = data.get("citations", [])
             cites = cites if isinstance(cites, list) else [cites]
             out.citations = [c for c in map(normalise_citation, cites) if c]
-            out.schema_ok = (out.claimed_region in REGIONS and out.artifact_type in self.taxonomy
+            out.schema_ok = (out.claimed_region in self.regions and out.artifact_type in self.taxonomy
                              and bool(out.explanation))
         except Exception as e:  # keep going; parse failures are counted, not hidden
             out.error = f"{type(e).__name__}: {e}"

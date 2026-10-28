@@ -13,3 +13,4 @@ tqdm
 anthropic>=0.40
 openai>=1.40  # OpenRouter / Ollama / LM Studio / vLLM (OpenAI-compatible)
 gradio>=6.0  # demo UI (theme and css are passed to launch())
+# demo's atomic regions: pip install --no-deps "mediapipe>=1.2" (its opencv-contrib dependency clashes with opencv-python)

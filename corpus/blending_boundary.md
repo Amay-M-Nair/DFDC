@@ -3,7 +3,7 @@
 ## bb-face-xray
 artifact: blending_boundary
 kind: artifact
-regions: chin / jawline, left cheek, right cheek, forehead / hairline, background / face boundary
+regions: chin, left jawline, right jawline, left cheek, right cheek, hairline, face boundary
 pattern: outer
 families: swap_autoencoder, swap_graphics, swap_gan, reenact_graphics, reenact_neural
 source: Li et al., "Face X-Ray for More General Face Forgery Detection", CVPR 2020
@@ -14,7 +14,7 @@ Most face manipulation methods create an altered face and then blend it into the
 ## bb-colour-mask
 artifact: blending_boundary
 kind: artifact
-regions: left cheek, right cheek, chin / jawline, forehead / hairline, background / face boundary
+regions: left cheek, right cheek, chin, left jawline, right jawline, forehead, hairline, face boundary
 pattern: outer
 families: swap_autoencoder
 source: Li et al., "Celeb-DF: A Large-scale Challenging Dataset for DeepFake Forensics", CVPR 2020
@@ -25,7 +25,7 @@ Li et al. list colour mismatch between the synthesised and the original face, an
 ## bb-scope
 artifact: blending_boundary
 kind: scope
-regions: nose, mouth / teeth, left eye, right eye
+regions: nose, mouth, teeth, left eye, right eye
 pattern: central
 families: any
 source: Li et al., "Face X-Ray for More General Face Forgery Detection", CVPR 2020

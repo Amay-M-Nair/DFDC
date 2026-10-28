@@ -3,7 +3,7 @@
 ## warp-affine
 artifact: spatial_warping
 kind: artifact
-regions: nose, mouth / teeth, left cheek, right cheek, chin / jawline
+regions: nose, mouth, left cheek, right cheek, chin, left jawline, right jawline
 pattern: central
 families: swap_autoencoder
 source: Li & Lyu, "Exposing DeepFake Videos By Detecting Face Warping Artifacts", CVPR Workshops 2019
@@ -14,7 +14,7 @@ DeepFake methods synthesise the face at a limited resolution and then warp it to
 ## warp-head-pose
 artifact: spatial_warping
 kind: artifact
-regions: nose, mouth / teeth, chin / jawline
+regions: nose, mouth, chin, left jawline, right jawline
 pattern: central
 families: swap_autoencoder
 source: Yang, Li & Lyu, "Exposing Deep Fakes Using Inconsistent Head Poses", ICASSP 2019
@@ -25,7 +25,7 @@ Yang et al. found that splicing a synthesised central face into an original imag
 ## warp-3d-fit
 artifact: spatial_warping
 kind: artifact
-regions: nose, mouth / teeth, left cheek, right cheek, chin / jawline
+regions: nose, mouth, left cheek, right cheek, chin, left jawline, right jawline
 pattern: central
 families: swap_graphics
 source: Rössler et al., "FaceForensics++: Learning to Detect Manipulated Facial Images", ICCV 2019
@@ -36,7 +36,7 @@ FaceSwap, a graphics-based method, fits a 3D face template to sparse facial land
 ## warp-scope
 artifact: spatial_warping
 kind: scope
-regions: nose, mouth / teeth, left cheek, right cheek, chin / jawline
+regions: nose, mouth, left cheek, right cheek, chin, left jawline, right jawline
 pattern: central
 families: any
 source: Li et al., "Celeb-DF: A Large-scale Challenging Dataset for DeepFake Forensics", CVPR 2020

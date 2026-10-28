@@ -3,7 +3,7 @@
 ## gan-upconvolution
 artifact: spectral_gan_fingerprint
 kind: artifact
-regions: forehead / hairline, left cheek, right cheek, background / face boundary
+regions: forehead, hairline, left cheek, right cheek, background
 pattern: outer
 families: synthetic
 source: Durall, Keuper & Keuper, "Watch Your Up-Convolution: CNN Based Generative Deep Neural Networks Are Failing to Reproduce Spectral Distributions", CVPR 2020
@@ -14,7 +14,7 @@ Durall et al. showed that the up-sampling layers of generative networks fail to 
 ## gan-frequency-grid
 artifact: spectral_gan_fingerprint
 kind: artifact
-regions: forehead / hairline, left cheek, right cheek, background / face boundary
+regions: forehead, hairline, left cheek, right cheek, background
 pattern: outer
 families: synthetic
 source: Frank et al., "Leveraging Frequency Analysis for Deep Fake Image Recognition", ICML 2020

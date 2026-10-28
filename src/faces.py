@@ -6,6 +6,9 @@ enlarged by `scale`, so the face sits in the middle of the crop the way the Grad
 Dataset extraction calls `ensure_yunet()` once in the main process and then builds croppers with
 `strict=True`, so every frame is cropped by the same detector (a silent fallback would mix detectors).
 The demo UI may fall back to OpenCV's bundled Haar cascade.
+
+The demo also uses MediaPipe's face landmarker (FaceMesh, ~4 MB model, downloaded once; needs the mediapipe
+package) on the YuNet crop: its 478 points place the atomic facial regions. Cropping stays with YuNet.
 """
 import os
 import urllib.request
@@ -22,6 +25,9 @@ YUNET_URLS = (
     "face_detection_yunet_2023mar.onnx",
 )
 YUNET_PATH = OUTPUT_DIR / "models" / "face_detection_yunet_2023mar.onnx"
+FACE_MESH_URL = ("https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/"
+                 "face_landmarker.task")
+FACE_MESH_PATH = OUTPUT_DIR / "models" / "face_landmarker.task"
 
 
 def _create_yunet(path):
@@ -50,6 +56,47 @@ def ensure_yunet():
             errors.append(f"{url}: {e}")
             tmp.unlink(missing_ok=True)
     raise RuntimeError("Could not download the YuNet face detector:\n" + "\n".join(errors))
+
+
+def _create_face_mesh(path):
+    from mediapipe.tasks.python import BaseOptions, vision
+
+    return vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=str(path)), num_faces=1))
+
+
+def ensure_face_mesh():
+    """Download MediaPipe's face landmarker model atomically (temp file + rename) and check it loads."""
+    if FACE_MESH_PATH.exists():
+        return FACE_MESH_PATH
+    FACE_MESH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = FACE_MESH_PATH.with_name(f"{FACE_MESH_PATH.stem}.{os.getpid()}.tmp.task")
+    try:
+        urllib.request.urlretrieve(FACE_MESH_URL, tmp)
+        _create_face_mesh(tmp).close()  # raises if it is not a valid model
+        os.replace(tmp, FACE_MESH_PATH)
+    except Exception as e:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"Could not download MediaPipe's face landmarker from {FACE_MESH_URL}: {e}") from e
+    print(f"MediaPipe face landmarker ready ({FACE_MESH_PATH.stat().st_size // 1024} KB)")
+    return FACE_MESH_PATH
+
+
+class FaceMesh:
+    """MediaPipe's 478-point face mesh, for the demo's atomic regions (needs the mediapipe package)."""
+
+    def __init__(self):
+        self.landmarker = _create_face_mesh(ensure_face_mesh())
+
+    def points(self, rgb: np.ndarray):
+        """478x2 landmark coordinates (pixels of `rgb`) of the face MediaPipe is most confident about, or None."""
+        import mediapipe as mp
+
+        found = self.landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb)))
+        if not found.face_landmarks:
+            return None
+        h, w = rgb.shape[:2]
+        return np.array([(p.x * w, p.y * h) for p in found.face_landmarks[0]])
 
 
 class FaceCropper:

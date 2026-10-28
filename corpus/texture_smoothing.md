@@ -3,7 +3,7 @@
 ## tex-global-texture
 artifact: texture_smoothing
 kind: artifact
-regions: left cheek, right cheek, forehead / hairline, chin / jawline
+regions: left cheek, right cheek, forehead, chin, left jawline, right jawline
 pattern: outer
 families: synthetic
 source: Liu et al., "Global Texture Enhancement for Fake Face Detection in the Wild", CVPR 2020
@@ -14,7 +14,7 @@ Liu et al. found that the skin texture of GAN-generated faces differs from real 
 ## tex-low-resolution
 artifact: texture_smoothing
 kind: artifact
-regions: left cheek, right cheek, forehead / hairline, chin / jawline
+regions: left cheek, right cheek, forehead, chin, left jawline, right jawline
 pattern: outer
 families: swap_autoencoder
 source: Li & Lyu, "Exposing DeepFake Videos By Detecting Face Warping Artifacts", CVPR Workshops 2019; Li et al., "Celeb-DF", CVPR 2020

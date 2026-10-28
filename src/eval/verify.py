@@ -26,9 +26,10 @@ def sentences(text: str) -> list:
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z\"'(])", text.strip()) if s.strip()]
 
 
-def cited_cards(out) -> list:
-    """Cards the answer cites that were actually given to it (ids that were not provided are ignored)."""
-    cards = cards_by_id()
+def cited_cards(out, atomic: bool = False) -> list:
+    """Cards the answer cites that were actually given to it (ids that were not provided are ignored).
+    atomic: the cards with atomic regions (the demo) instead of the combined 9."""
+    cards = cards_by_id(atomic)
     return [cards[c] for c in dict.fromkeys(out.citations) if c in cards and c in out.retrieved]
 
 
@@ -38,7 +39,8 @@ def grounding_flags(out, exp) -> dict:
         return {}
     flags = {"uncited": not out.citations}
     if exp.label == "fake":
-        same_type = [c for c in cited_cards(out) if c.kind == "artifact" and c.artifact_type == out.artifact_type]
+        same_type = [c for c in cited_cards(out, exp.atomic)
+                     if c.kind == "artifact" and c.artifact_type == out.artifact_type]
         flags["artifact_not_in_cited_card"] = not same_type
         flags["region_not_in_cited_card"] = not any(out.claimed_region in c.regions for c in same_type)
     return flags
@@ -89,7 +91,7 @@ class EvidenceVerifier:
 
     @staticmethod
     def premise(out, exp) -> str:
-        return " ".join([exp.describe()] + [c.text for c in cited_cards(out)])
+        return " ".join([exp.describe()] + [c.text for c in cited_cards(out, exp.atomic)])
 
     def support_batch(self, outs, exps) -> list:
         """Per answer: its sentences, their NLI labels and the shares supported/contradicted (one batched call)."""

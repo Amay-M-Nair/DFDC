@@ -3,7 +3,7 @@
 ## light-estimation
 artifact: lighting_inconsistency
 kind: artifact
-regions: nose, left cheek, right cheek, forehead / hairline
+regions: nose, left cheek, right cheek, forehead
 pattern: central
 families: swap_autoencoder, swap_graphics, reenact_graphics
 source: Matern, Riess & Stamminger, "Exploiting Visual Artifacts to Expose Deepfakes and Face Manipulations", WACV Workshops 2019
@@ -14,7 +14,7 @@ Matern et al. point out that manipulations which transfer or re-render a face de
 ## light-face2face
 artifact: lighting_inconsistency
 kind: artifact
-regions: nose, left cheek, right cheek, forehead / hairline
+regions: nose, left cheek, right cheek, forehead
 pattern: central
 families: reenact_graphics
 source: Thies et al., "Face2Face: Real-time Face Capture and Reenactment of RGB Videos", CVPR 2016

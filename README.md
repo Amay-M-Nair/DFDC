@@ -15,7 +15,10 @@ those explanations are grounded or hallucinated.
 ## Setup
 ```bash
 pip install -r requirements.txt
+pip install --no-deps "mediapipe>=1.2"     # demo only: face mesh for the atomic regions
 ```
+`--no-deps` keeps MediaPipe from installing `opencv-contrib-python` next to `opencv-python`; both provide `cv2` and
+overwrite each other. Its face-landmarker model (~4 MB) is downloaded on first use.
 
 ## Data: FaceForensics++
 FF++ is a video dataset, so first extract face crops into `data/{train,val,test}/{real,fake}`:
@@ -176,6 +179,12 @@ taxonomy (regions per label) is now the union of each label's artifact cards, wh
 fingerprint label and leaves the others as before. The card format is described in `src/explain/corpus.py`.
 Every card is marked `checked: no` until its claim has been compared with the cited paper.
 
+Card regions are written as **atomic parts**, each listed only when the claim is about it: teeth, mouth, hairline,
+forehead, chin, left/right jawline, face boundary and background, plus the eyes, nose and cheeks. The demo uses them
+as they are. Phases 3–5 map each part to the combined region it belongs to (teeth and mouth → `mouth / teeth`,
+hairline and forehead → `forehead / hairline`, chin and jawlines → `chin / jawline`, face boundary and background →
+`background / face boundary`), which gives exactly the cards, taxonomy and prompts those phases were run with.
+
 **Retriever (`src/explain/retriever.py`).**
 1. *Filter* by verdict and regions: FAKE → artifact cards that list one of the heatmap's top-3 regions; REAL →
    authentic cards.
@@ -261,11 +270,18 @@ A Gradio app (`app.py`, `src/demo/`) with two pages:
   Retrieve → Explain → Check, with each step's time, and the panels fill in as the steps finish:
   - the verdict with P(fake), the decision threshold and the confidence level
   - the face the detector saw, the Grad-CAM++ heatmap with the hottest area boxed, and every facial-region box
-    coloured by its heat concentration (blue = cold, red = hottest) and labelled with it, next to a list of all 9
+    coloured by its heat concentration (blue = cold, red = hottest) and labelled with it, next to a list of all
     regions ranked by heat. They show what made the detector call the face fake (or, for a REAL verdict, real)
+  - the demo uses **atomic regions** instead of the 9 combined ones of phases 2–5: eyes, nose, teeth, mouth, cheeks,
+    hairline, forehead, chin, left/right jawline, face boundary and background. YuNet still finds and crops the
+    face (the crop the detector was trained on); MediaPipe's 478-point face mesh then places every region on the
+    crop. *Teeth* is the opening between the inner lips and exists only when the mouth is open (inner-lip gap above
+    8% of the mouth's width), so a closed mouth gets no teeth region and no teeth cards; the hairline is a band
+    above the mesh, which stops at the upper forehead. If MediaPipe finds no face, or is not installed, the boxes
+    come from YuNet's 5 points (the combined boxes split into their parts) without teeth
   - the evidence summary, which is all the LLM reads. Unlike phases 3–5, which list only the top 3 regions, the
-    demo's summary lists all 9 regions with their concentration and share of heat. Card retrieval still uses the
-    top 3
+    demo's summary lists every region with its concentration and share of heat. Card retrieval still uses the
+    top 3, matched against the cards' atomic regions
   - the evidence cards retrieved from the corpus (cited cards highlighted)
   - the grounded explanation: region, artefact, the sentences, the cited card ids, and a one-line check that the
     citations were given to the model, the artefact is backed by a cited card and where the named region ranks

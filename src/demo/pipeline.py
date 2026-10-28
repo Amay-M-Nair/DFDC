@@ -27,6 +27,7 @@ MODELS = {"openai/gpt-oss-120b": "GPT-OSS-120B", "openai/gpt-oss-20b": "GPT-OSS-
 MAX_TOKENS = {"qwen/qwen3.8-27b": 1000}   # Groq caps Qwen at 1K output tokens per minute
 STEPS = ("Detect", "Heatmap", "Retrieve", "Explain", "Check")
 SUMMARY_REGIONS = None                     # the LLM reads every region (phases 3-5 list only the top 3)
+ATOMIC = True                              # atomic regions: teeth, hairline, jawline, ... (phases 2-5: the combined 9)
 GALLERY_DIR = OUTPUT_DIR / "demo" / "gallery"
 DISPLAY = 448                              # side of the images shown in the UI (the detector sees 224)
 METHOD_NAMES = {"Deepfakes": "Deepfakes · face swap", "FaceSwap": "FaceSwap · face swap",
@@ -64,7 +65,7 @@ def _upscale(rgb: np.ndarray) -> np.ndarray:
 def _box(img, box, color, width):
     x0, y0, x1, y1 = (int(round(v * DISPLAY)) for v in box)
     cv2.rectangle(img, (x0, y0), (x1 - 1, y1 - 1), color, width, cv2.LINE_AA)
-    return x0, y0
+    return x0, y0, x1, y1
 
 
 def heat_color(conc: float, hottest: float) -> tuple:
@@ -76,18 +77,27 @@ def heat_color(conc: float, hottest: float) -> tuple:
 
 def draw_region_heat(face: np.ndarray, regions: dict, heat: list) -> np.ndarray:
     """Every facial-region box coloured by its heat concentration and labelled with it; hotter boxes are thicker
-    and drawn on top, and the labels go over all boxes. heat: [(region, concentration, share)], hottest first."""
+    and drawn on top, and the labels go over all boxes. Each label sits in a corner of its box that no hotter
+    region's label already uses. heat: [(region, concentration, share)], hottest first."""
     out = face.copy()
     hottest = max((c for _, c, _ in heat), default=1) or 1
     boxed = [(name, conc, heat_color(conc, hottest)) for name, conc, _ in reversed(heat)
              if name in regions]  # coldest first; the background has no box
-    corners = [_box(out, regions[name], color, 1 + round(3 * conc / hottest)) for name, conc, color in boxed]
-    for (_, conc, color), (x0, y0) in zip(boxed, corners):
-        label = f"{conc:.1f}x"
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+    rects = [_box(out, regions[name], color, 1 + round(3 * conc / hottest)) for name, conc, color in boxed]
+    placed, labels = [], []
+    for (_, conc, color), (x0, y0, x1, y1) in reversed(list(zip(boxed, rects))):  # hottest picks its corner first
+        text = f"{conc:.1f}x"
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        w, h = tw + 8, th + 8
+        corners = [(x0, y0), (x1 - w, y0), (x0, y1 - h), (x1 - w, y1 - h)]
+        free = [c for c in corners if not any(c[0] < px + pw and px < c[0] + w and c[1] < py + ph and py < c[1] + h
+                                              for px, py, pw, ph in placed)]
+        placed.append((*(free or corners)[0], w, h))
+        labels.append((text, th, color))
+    for (lx, ly, w, h), (text, th, color) in reversed(list(zip(placed, labels))):  # hottest drawn last, on top
         ink = (0, 0, 0) if 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2] > 150 else (255, 255, 255)
-        cv2.rectangle(out, (x0, y0), (x0 + tw + 8, y0 + th + 8), color, -1)
-        cv2.putText(out, label, (x0 + 4, y0 + th + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, ink, 1, cv2.LINE_AA)
+        cv2.rectangle(out, (lx, ly), (lx + w, ly + h), color, -1)
+        cv2.putText(out, text, (lx + 4, ly + th + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, ink, 1, cv2.LINE_AA)
     return out
 
 
@@ -118,7 +128,7 @@ class DemoPipeline:
         if self._explainer is None:
             from src.xai.gradcam import Explainer
 
-            self._explainer = Explainer(self.checkpoint)
+            self._explainer = Explainer(self.checkpoint, atomic=ATOMIC)
         return self._explainer
 
     @property
@@ -126,7 +136,7 @@ class DemoPipeline:
         if self._retriever is None:
             from src.explain.retriever import Retriever
 
-            self._retriever = Retriever()
+            self._retriever = Retriever(atomic=ATOMIC)
         return self._retriever
 
     def llm(self, model: str, min_interval: float = 0) -> ForensicExplainer:
@@ -141,7 +151,8 @@ class DemoPipeline:
             if not ForensicExplainer.available():
                 raise RuntimeError("No GROQ_API_KEY set: live explanations need a Groq key "
                                    "(the gallery works without one)")
-            self._llms[model] = ForensicExplainer(retriever=self.retriever, summary_regions=SUMMARY_REGIONS)
+            self._llms[model] = ForensicExplainer(retriever=self.retriever, summary_regions=SUMMARY_REGIONS,
+                                                  atomic=ATOMIC)
         return self._llms[model]
 
     def run(self, image: Image.Image, model: str, crop: bool = True):

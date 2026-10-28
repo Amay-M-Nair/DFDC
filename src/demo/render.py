@@ -3,7 +3,7 @@ from html import escape
 
 from src.demo.pipeline import MODELS, METHOD_NAMES, STEPS, heat_color
 from src.explain.corpus import cards_by_id
-from src.xai.gradcam import BACKGROUND
+from src.xai.gradcam import ATOMIC_BACKGROUND, BACKGROUND
 
 CSS = """
 .dd-header h1 {margin: 0; font-size: 1.6rem; letter-spacing: -0.01em;}
@@ -47,10 +47,10 @@ CSS = """
 .dd-truth {margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border-color-primary); font-size: 0.9rem;}
 
 /* region heat */
-.dd-region {display: grid; grid-template-columns: 18px 1fr; gap: 8px; align-items: center; margin: 5px 0;
-            font-size: 0.88rem;}
-.dd-swatch {width: 14px; height: 14px; border-radius: 4px;}
-.dd-bar {height: 5px; border-radius: 3px; margin-top: 3px;}
+.dd-region {display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 8px; align-items: center;
+            margin: 4px 0; font-size: 0.85rem;}
+.dd-swatch {width: 12px; height: 12px; border-radius: 3px;}
+.dd-bar {height: 4px; border-radius: 2px; margin-top: 2px;}
 
 /* explanation and cards */
 .dd-expl {font-size: 1.02rem; line-height: 1.6; margin: 10px 0;}
@@ -143,15 +143,18 @@ def regions(res) -> str:
     rows = []
     for name, conc, share in res.top_regions:
         c = _rgb(heat_color(conc, hottest))
-        boxed = "" if name != BACKGROUND else " <span class='dd-muted'>(outside the face boxes)</span>"
+        boxed = "" if name not in (BACKGROUND, ATOMIC_BACKGROUND) else " <span class='dd-muted'>(no box)</span>"
         rows.append(f"<div class='dd-region'><span class='dd-swatch' style='background:{c}'></span><div>"
-                    f"<b>{escape(name)}</b>{boxed} <span class='dd-muted'>· {conc:.1f}× the image's average heat · "
-                    f"{share:.0%} of all heat</span><div class='dd-bar' style='width:{conc / hottest * 100:.0f}%;"
-                    f"background:{c}'></div></div></div>")
+                    f"<b>{escape(name)}</b>{boxed}<div class='dd-bar' style='width:{conc / hottest * 100:.0f}%;"
+                    f"background:{c}'></div></div><span class='dd-muted'>{conc:.1f}× · {share:.0%}</span></div>")
     title = f"What made it look {res.label}: every region by heat"
-    src = "" if res.region_source == "landmarks" else \
-        "<div class='dd-muted'>Region boxes from a fixed grid (no facial landmarks found).</div>"
-    return f"<div class='dd-card'><div class='dd-title'>{title}</div>{''.join(rows)}{src}</div>"
+    legend = "<div class='dd-muted'>× the image's average heat · share of all heat</div>"
+    names = [name for name, _, _ in res.top_regions]
+    src = {"mesh": "" if "teeth" in names else "Mouth closed, so there is no teeth region.",
+           "landmarks": "Region boxes from YuNet's 5 landmarks (MediaPipe found no face), so teeth is not placed.",
+           }.get(res.region_source, "Region boxes from a fixed grid (no facial landmarks found).")
+    src = f"<div class='dd-muted'>{src}</div>" if src else ""
+    return f"<div class='dd-card'><div class='dd-title'>{title}</div>{legend}{''.join(rows)}{src}</div>"
 
 
 def summary(res) -> str:
@@ -189,6 +192,8 @@ def explanation(res, waiting: bool = False) -> str:
         where = f"named region is #{rank} of {len(res.top_regions)} by heat"
         checks.append(f"<span class='dd-ok'>✓</span> {where}" if res.check.get("region_heat", 0) >= 1
                       else f"<span class='dd-bad'>✕</span> {where}, cooler than the image average")
+    elif "region_rank" in res.check:
+        checks.append("<span class='dd-bad'>✕</span> named region is not one of this face's regions")
     latency = f" · {res.timings['Explain']:.1f} s" if "Explain" in res.timings else ""
     return (f"<div class='dd-card'><div class='dd-title'>Grounded explanation · {escape(model)}{latency}</div>"
             f"<span class='dd-chip'>region: {escape(a.claimed_region)}</span>{artefact}"

@@ -3,7 +3,7 @@
 ## comp-block-traces
 artifact: compression_artifacts
 kind: artifact
-regions: background / face boundary, left cheek, right cheek
+regions: face boundary, background, left cheek, right cheek
 pattern: outer
 families: any
 source: Wallace, "The JPEG Still Picture Compression Standard", IEEE Trans. Consumer Electronics 1992; Bianchi & Piva, "Image Forgery Localization via Block-Grained Analysis of JPEG Artifacts", IEEE TIFS 2012
