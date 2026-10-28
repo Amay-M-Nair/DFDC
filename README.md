@@ -340,6 +340,5 @@ src/explain/     evidence-card loader, retriever, LLM providers + explainer
 src/eval/        metrics, verifier (grounding checks + NLI), phase 5 experiment (sample, baselines, scoring) and statistics
 src/demo/        demo pipeline (step by step, offline gallery) and panel HTML for app.py
 corpus/          evidence cards (one claim each, with regions, families and source)
-notebooks/       CNN learning notebooks
 data/ outputs/   (git-ignored)
 ```

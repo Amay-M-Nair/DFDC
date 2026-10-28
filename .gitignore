@@ -7,3 +7,5 @@ data/*
 outputs/*
 !outputs/.gitkeep
 .ipynb_checkpoints/
+.claude/
+notebooks/
