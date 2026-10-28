@@ -96,6 +96,11 @@ def _parse_json(text: str) -> dict:
     return json.loads(match.group(0))
 
 
+def normalise_citation(cid) -> str:
+    """Card id as cited, without the brackets or quotes some models copy from the prompt ("[warp-affine]")."""
+    return str(cid).strip().strip("[]'\"` ").strip()
+
+
 class ForensicExplainer:
     def __init__(self, retriever: Retriever = None):
         """retriever: a shared Retriever; one is built on first grounded use if not given."""
@@ -133,7 +138,8 @@ class ForensicExplainer:
             out.artifact_type = str(data.get("artifact_type", "")).strip()
             out.explanation = str(data.get("explanation", "")).strip()
             cites = data.get("citations", [])
-            out.citations = [str(c) for c in cites] if isinstance(cites, list) else [str(cites)]
+            cites = cites if isinstance(cites, list) else [cites]
+            out.citations = [c for c in map(normalise_citation, cites) if c]
             out.schema_ok = (out.claimed_region in REGIONS and out.artifact_type in self.taxonomy
                              and bool(out.explanation))
         except Exception as e:  # keep going; parse failures are counted, not hidden
