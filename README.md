@@ -199,19 +199,55 @@ Notebook 06 also scores phase 3's answers with the same checks (with the new tax
 between models on the artefact type (Fleiss' κ), **method consistency** (the claimed artefact is documented for
 the image's true manipulation family, which the LLM never sees) and the rate of GAN-fingerprint claims.
 
-## Grounded vs. ungrounded evaluation (phase 5, command line)
-```bash
-export LLM_PROVIDER=openrouter OPENROUTER_API_KEY=...    # or ANTHROPIC_API_KEY=..., or LLM_PROVIDER=ollama
-python -m src.eval.run_eval --n 50                          # outputs/eval/
-```
-Metrics (per condition):
-- **iou**: IoU between the facial region the explanation names and the top-20% Grad-CAM++ pixels
-- **pointing_hit**: the named region contains the heatmap peak
-- **region_unsupported**: the named region is not among the heatmap's top-3 regions
-- **artifact_unsupported**: the claimed artifact type is unknown, or never occurs in the highlighted regions (per corpus taxonomy)
-- **verdict_mismatch**: the claimed artifact contradicts the verdict (an artifact for REAL, or `none` for FAKE)
-- **citation_invalid**: cites a source that was not retrieved
-- **any_hallucination**: any of the above
+## Evaluation (phase 5)
+Notebook 07 runs the frozen phase 3 and phase 4 pipeline on a **held-out test sample**. The pilot was used for
+tuning (output limits, citation parsing, when to revise), so its numbers are not reported as results.
+- **Sample:** one frame per test video from videos the pilot and worked examples did not use, balanced by
+  manipulation method. The default is 48 per dataset, 96 images in total.
+- **Conditions:** every image is explained by all three models in all three conditions (ungrounded, grounded,
+  verified), so every comparison is paired by image.
+- **Runtime:** the sample runs in 3 daily batches of about 140K Groq tokens per model.
+
+**Metrics** (`src/eval/experiment.py`):
+
+| Group | Metrics |
+|---|---|
+| output | `valid` |
+| heatmap faithfulness | `region_in_top3`, `pointing_hit`, `region_iou` |
+| artefact | `verdict_consistent`, `artifact_plausible`, `method_consistent` (fits the true manipulation family, which the LLM never sees), `gan_claim` |
+| attribution | `supported_share` / `contradicted_share` (NLI against the evidence summary + cited cards), `citation_valid`, `artifact_in_cited_card`, `region_in_cited_card` |
+| language (keyword checks, approximate) | `hedges_when_uncertain` (moderate/borderline verdicts), `overclaims` (certainty words), `visual_claim` (describes the image as if seen) |
+| agreement | Fleiss' κ between models on the artefact type, on the same images in every condition |
+
+**Baselines** use no LLM and are scored with the same checks:
+- *top region + first card*: the heatmap's top region and the retriever's best artefact card, i.e. the evidence
+  pipeline alone
+- *always mouth*: the most common pilot answer
+- *random plausible*: the exact expected score of a random top-3 region with an artefact that fits it
+
+They show whether a rate means anything, for example whether the LLM points better than simply naming the top
+region.
+
+**Statistics** (`src/eval/stats.py`):
+- **Tests:** paired by image. Yes/no checks use McNemar's exact test; shares and IoU use the Wilcoxon signed-rank
+  test with rank-biserial r.
+- **Intervals:** 95% bootstrap intervals over images for every mean and difference.
+- **Corrections:** Holm within each family of tests.
+- **Primary hypotheses** (pre-registered): grounded vs. ungrounded, per model, on `supported_share`,
+  `contradicted_share`, `method_consistent` and `gan_claim`, Holm over those 12 tests.
+- **Secondary:** verified vs. grounded, the other metrics, LLM vs. baselines, and breakdowns by dataset,
+  verdict correctness and confidence.
+- **NLI check:** a stratified sentence sample is exported for checking the NLI model by hand, and any labelled
+  sample is compared with it (agreement, Cohen's κ).
+
+**What the pilot suggests about power.** On the 48 pilot images, the same primary tests are significant for
+`supported_share` in all three models (+0.16, +0.11 and +0.32, Holm p ≤ 0.02). The fall in contradicted
+sentences (−0.04 to −0.05) is significant before the correction (p = 0.016) but not after it. The changes in
+`method_consistent` and `gan_claim` are too small or too rare to test at this size. The test set is twice the
+pilot.
+
+`python -m src.eval.run_eval --n 50` is an older quick check (one model, ungrounded vs. grounded, heatmap and
+hallucination flags only).
 
 ## Demo UI
 ```bash
@@ -221,8 +257,8 @@ python app.py     # http://localhost:7860
 ## Running on Kaggle
 Done: model training and evaluation (01–03), Grad-CAM++ explainability (04), choosing the main detector,
 EfficientNet-B0 (04b), and ungrounded LLM explanations (05; prompt and settings frozen as the phase 4 baseline).
-Current phase: **RAG-grounded explanations** (notebook 06). The faithfulness evaluation (07) and the demo (08)
-are parked in `kaggle/later/`.
+RAG-grounded explanations (06) are done on the pilot. Current phase: **evaluation** (notebook 07, one batch per
+day). The demo (08) is parked in `kaggle/later/`.
 
 Each notebook's saved output is added as an input to the next one (**Save Version → Save & Run All (Commit)**,
 then **Add Input → Your Work → Notebooks**).
@@ -237,6 +273,7 @@ then **Add Input → Your Work → Notebooks**).
 | `04b_model_selection` | 03, 04 (committed outputs) | None | accuracy vs. explainability charts, pre-declared scorecard to pick the main model |
 | `05_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0); secret `GROQ_API_KEY` | GPU T4 (detector only) | evidence summaries + ungrounded explanations from GPT-OSS-120B, GPT-OSS-20B and Qwen3.8-27B (Groq free tier), with prompts and raw replies; worked examples and pilot consistency rates |
 | `06_grounded_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0), 05 (committed output); secret `GROQ_API_KEY` | GPU T4 (detector, embeddings, NLI) | retriever comparison; grounded and verified explanations from the same three models on the same images; all three conditions scored with the same checks; model agreement; a sentence sample for checking the NLI model by hand. One run uses up to ~180K Groq tokens per model, so run each model at most once per day (`RUN_TAG`); `RUN_MODELS` re-runs only some models and loads the others from an attached earlier output. Qwen gets a 1,000-token output limit and 60 s spacing (Groq caps it at 1K output tokens per minute) |
+| `07_evaluation` | 01, 01b, 02 (the copy with EfficientNet-B0), 05 (committed output); from batch 1 on the previous output of 07; secret `GROQ_API_KEY` | GPU T4 (detector, embeddings, NLI) | held-out test sample (96 images) explained by the three models in all three conditions, run as `BATCH` 0, 1, 2 on separate days (each run carries the earlier batches forward); per-answer scores, no-LLM baselines, paired tests with bootstrap intervals and Holm correction, model agreement, breakdowns, a forest plot and an NLI check sample. `BATCH = None` re-runs only the analysis |
 
 Training all seven models takes roughly 7–8 GPU-hours. Kaggle stops sessions at 12 h, so `02_train` skips models
 that would not fit; to be safe, run two copies of it with the model list split between them. `03_evaluate` collects
@@ -254,7 +291,7 @@ src/kaggle_utils.py  locate earlier notebooks' outputs on Kaggle
 kaggle/          Kaggle notebooks for the current phase (kaggle/later/: parked phases)
 src/xai/         Grad-CAM++
 src/explain/     evidence-card loader, retriever, LLM providers + explainer
-src/eval/        metrics, verifier (grounding checks + NLI), evaluation runner
+src/eval/        metrics, verifier (grounding checks + NLI), phase 5 experiment (sample, baselines, scoring) and statistics
 corpus/          evidence cards (one claim each, with regions, families and source)
 notebooks/       CNN learning notebooks
 data/ outputs/   (git-ignored)
