@@ -12,4 +12,4 @@ matplotlib
 tqdm
 anthropic>=0.40
 openai>=1.40  # OpenRouter / Ollama / LM Studio / vLLM (OpenAI-compatible)
-gradio>=4.0
+gradio>=6.0  # demo UI (theme and css are passed to launch())

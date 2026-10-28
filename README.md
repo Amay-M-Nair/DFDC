@@ -9,8 +9,8 @@ those explanations are grounded or hallucinated.
 | 2 | Grad-CAM++ localisation + facial-region attribution | `src/xai/gradcam.py` |
 | 3 | Ungrounded LLM explanation (GPT-OSS-120B/20B and Qwen3.8-27B on Groq's free tier; other providers also work) | `src/explain/llm.py`, `src/explain/providers.py` |
 | 4 | RAG-grounded explanation: evidence cards, hybrid retrieval, cited answers, verifier | `corpus/`, `src/explain/retriever.py`, `src/eval/verify.py` |
-| 5 | Faithfulness IoU, pointing game, hallucination rate | `src/eval/` |
-| 6 | Local demo UI (Gradio, localhost) | `app.py` |
+| 5 | Held-out evaluation: ungrounded vs. grounded vs. verified, paired tests, no-LLM baselines | `src/eval/experiment.py`, `src/eval/stats.py` |
+| 6 | Demo for the exhibition (Gradio): live analysis + offline gallery | `app.py`, `src/demo/` |
 
 ## Setup
 ```bash
@@ -249,16 +249,34 @@ pilot.
 `python -m src.eval.run_eval --n 50` is an older quick check (one model, ungrounded vs. grounded, heatmap and
 hallucination flags only).
 
-## Demo UI
+## Demo (phase 6)
 ```bash
-python app.py     # http://localhost:7860
+python app.py [--checkpoint path/to/best.pt] [--share]     # http://localhost:7860
 ```
+A Gradio app (`app.py`, `src/demo/`) with two pages:
+- **Live analysis.** Upload a face image or a video frame and pick the explanation model (GPT-OSS-120B,
+  GPT-OSS-20B or Qwen3.8-27B on Groq). A progress strip under the upload box lights up Detect → Heatmap →
+  Retrieve → Explain → Check, with each step's time, and the panels fill in as the steps finish:
+  - the verdict with P(fake), the decision threshold and the confidence level
+  - the face the detector saw, the Grad-CAM++ heatmap with the hottest area boxed, and the facial-region boxes
+    with the top 3 regions numbered and listed by heat concentration
+  - the evidence summary, which is all the LLM reads
+  - the evidence cards retrieved from the corpus (cited cards highlighted)
+  - the grounded explanation: region, artefact, the sentences, the cited card ids, and a one-line check that the
+    citations were given to the model, the artefact is backed by a cited card and the region is in the top 3
+- **Gallery · offline.** Test images analysed in advance by every model, so this page works without internet or
+  an API key. The real label (dataset, manipulation method, and whether the detector was right) is shown with
+  each result. It includes one or two images the detector gets wrong.
+
+The live page needs EfficientNet-B0's `best.pt` (default `outputs/checkpoints/best.pt`) and `GROQ_API_KEY`.
+The gallery (`outputs/demo/gallery/`) is built on Kaggle by notebook 08, or locally with
+`python -m src.demo.pipeline --data FF++=<face crops> CelebDF=<face crops>`.
 
 ## Running on Kaggle
 Done: model training and evaluation (01–03), Grad-CAM++ explainability (04), choosing the main detector,
 EfficientNet-B0 (04b), and ungrounded LLM explanations (05; prompt and settings frozen as the phase 4 baseline).
 RAG-grounded explanations (06) are done on the pilot. Current phase: **evaluation** (notebook 07, one batch per
-day). The demo (08) is parked in `kaggle/later/`.
+day). The demo (08) builds the offline gallery and launches the app with a public link.
 
 Each notebook's saved output is added as an input to the next one (**Save Version → Save & Run All (Commit)**,
 then **Add Input → Your Work → Notebooks**).
@@ -274,6 +292,7 @@ then **Add Input → Your Work → Notebooks**).
 | `05_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0); secret `GROQ_API_KEY` | GPU T4 (detector only) | evidence summaries + ungrounded explanations from GPT-OSS-120B, GPT-OSS-20B and Qwen3.8-27B (Groq free tier), with prompts and raw replies; worked examples and pilot consistency rates |
 | `06_grounded_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0), 05 (committed output); secret `GROQ_API_KEY` | GPU T4 (detector, embeddings, NLI) | retriever comparison; grounded and verified explanations from the same three models on the same images; all three conditions scored with the same checks; model agreement; a sentence sample for checking the NLI model by hand. One run uses up to ~180K Groq tokens per model, so run each model at most once per day (`RUN_TAG`); `RUN_MODELS` re-runs only some models and loads the others from an attached earlier output. Qwen gets a 1,000-token output limit and 60 s spacing (Groq caps it at 1K output tokens per minute) |
 | `07_evaluation` | 01, 01b, 02 (the copy with EfficientNet-B0), 05 (committed output); from batch 1 on the previous output of 07; secret `GROQ_API_KEY` | GPU T4 (detector, embeddings, NLI) | held-out test sample (96 images) explained by the three models in all three conditions, run as `BATCH` 0, 1, 2 on separate days (each run carries the earlier batches forward); per-answer scores, no-LLM baselines, paired tests with bootstrap intervals and Holm correction, model agreement, breakdowns, a forest plot and an NLI check sample. `BATCH = None` re-runs only the analysis |
+| `08_demo` | 01, 01b, 02 (the copy with EfficientNet-B0); secret `GROQ_API_KEY` | GPU T4 | the offline gallery (one correctly classified test image per manipulation method and dataset plus up to two the detector gets wrong, each explained by all three models), then the demo app with a temporary public link. Download `outputs/demo/gallery/` to run the demo on your own computer |
 
 Training all seven models takes roughly 7–8 GPU-hours. Kaggle stops sessions at 12 h, so `02_train` skips models
 that would not fit; to be safe, run two copies of it with the model list split between them. `03_evaluate` collects
@@ -292,6 +311,7 @@ kaggle/          Kaggle notebooks for the current phase (kaggle/later/: parked p
 src/xai/         Grad-CAM++
 src/explain/     evidence-card loader, retriever, LLM providers + explainer
 src/eval/        metrics, verifier (grounding checks + NLI), phase 5 experiment (sample, baselines, scoring) and statistics
+src/demo/        demo pipeline (step by step, offline gallery) and panel HTML for app.py
 corpus/          evidence cards (one claim each, with regions, families and source)
 notebooks/       CNN learning notebooks
 data/ outputs/   (git-ignored)

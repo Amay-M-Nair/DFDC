@@ -216,11 +216,18 @@ class Explainer:
     def heatmap(self, x: torch.Tensor, label: str) -> np.ndarray:
         return self.cam(input_tensor=x, targets=[LogitTarget(1.0 if label == "fake" else -1.0)])[0]
 
-    def __call__(self, image: Image.Image) -> Explanation:
-        image = image.convert("RGB")
+    def predict(self, image: Image.Image):
+        """(input tensor, P(fake)) for an RGB image: the detector alone, without the heatmap."""
         x = self.transform(image).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            prob = torch.sigmoid(self.model(x)).item()
+            return x, torch.sigmoid(self.model(x)).item()
+
+    def __call__(self, image: Image.Image) -> Explanation:
+        image = image.convert("RGB")
+        return self.explain(image, *self.predict(image))
+
+    def explain(self, image: Image.Image, x: torch.Tensor, prob: float) -> Explanation:
+        """Heatmap and facial-region attribution for an RGB image already scored by predict()."""
         label = "fake" if prob >= self.model.threshold else "real"
         heatmap = self.heatmap(x, label)
         rgb8 = np.asarray(image.resize((IMG_SIZE, IMG_SIZE)))
