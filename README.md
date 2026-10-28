@@ -5,7 +5,7 @@ those explanations are grounded or hallucinated.
 
 | Phase | What | Where |
 |---|---|---|
-| 1 | EfficientNet-B0 classifier vs. 5 baselines; trained on FF++, tested on FF++ and Celeb-DF | `src/classifier/` |
+| 1 | EfficientNet-B0 classifier vs. 6 baselines; trained on FF++, tested on FF++ and Celeb-DF | `src/classifier/` |
 | 2 | Grad-CAM++ localisation + facial-region attribution | `src/xai/gradcam.py` |
 | 3 | Ungrounded LLM explanation (GPT-OSS-120B/20B and Qwen3.8-27B on Groq's free tier; other providers also work) | `src/explain/llm.py`, `src/explain/providers.py` |
 | 4 | RAG-grounded explanation: evidence cards, hybrid retrieval, cited answers, verifier | `corpus/`, `src/explain/retriever.py`, `src/eval/verify.py` |
@@ -69,7 +69,8 @@ per-method AUC, params/GFLOPs/throughput/training time, paired significance test
 ```bash
 python -m src.xai.gradcam --image path/to/face.jpg     # default: outputs/checkpoints/best.pt (EfficientNet-B0)
 ```
-Facial regions (eyes, nose, mouth, cheeks, forehead, chin) are placed from YuNet's 5 landmarks on each face.
+Facial regions (eyes, nose, mouth, cheeks, forehead, chin) are placed from YuNet's 5 landmarks on each face (the
+demo uses finer regions; see Demo).
 Regions are ranked by **concentration** (mean heat inside the region relative to the image mean), so large
 regions such as the background or forehead don't come first just for their size; `rank_by="share"` ranks by
 share of total heat instead.
@@ -82,7 +83,7 @@ Deletion/insertion faithfulness (Grad-CAM vs. Grad-CAM++ vs. random, paired Wilc
 attribution for every model and manipulation, in `outputs/gradcam/`.
 
 ## Choosing the LLM
-The explanation step works with the Groq API (free tier; used for phase 3), Anthropic, OpenRouter, a local
+The explanation step works with the Groq API (free tier; used for phases 3–6), Anthropic, OpenRouter, a local
 model, or any OpenAI-compatible server. Set these environment variables (on Kaggle, the notebooks set them for you).
 Locally you can instead put them in a `.env` file in the project root, one `NAME=value` per line (git-ignored;
 variables already set in the environment take precedence):
@@ -95,8 +96,8 @@ variables already set in the environment take precedence):
 | Ollama (local) | `ollama` | none | `llama3.1:8b` |
 | LM Studio / vLLM / llama.cpp / OpenAI | `openai` + `LLM_BASE_URL` | `OPENAI_API_KEY` (not needed for local servers) | `gpt-4o-mini` |
 
-`LLM_API_KEY` is used when the provider's own key variable is not set. Keep the same model for both conditions in
-a comparison run; the model name is recorded in `outputs/eval/summary.json`.
+`LLM_API_KEY` is used when the provider's own key variable is not set. Every answer records the `provider:model`
+that produced it.
 
 For free tiers, `LLM_MIN_INTERVAL` spaces requests (seconds) to stay under per-minute limits, and API calls are
 retried with backoff on rate limits and transient server errors. `LLM_REASONING_EFFORT` sets the effort for models
@@ -105,7 +106,7 @@ that reason before answering (Groq defaults to `low`; `off` sends nothing) and `
 Groq's free tier allows, per model, 30 requests and 8K tokens per minute and 1K requests and 200K tokens per day;
 notebook 05 spaces requests 12 s apart to stay under the per-minute token limit. Qwen3.8-27B is also capped at 1K
 output tokens per minute, and Groq refuses any request whose output limit is above that, so notebook 05 gives it a
-900-token limit and 30 s spacing.
+900-token limit and 30 s spacing; notebooks 06–08 and the demo use 1,000 tokens (60 s spacing in the notebooks).
 
 Temperature: Groq, OpenRouter, Ollama and other OpenAI-compatible servers use 0, so repeated runs give (nearly) the
 same answers; Anthropic uses the API default, so its answers can vary between runs.
@@ -230,9 +231,9 @@ run; Qwen's grounded answers come from a run with a 900-token output limit, whic
   three models (paired Wilcoxon, Holm-corrected p ≤ 0.02).
 - **Scope cards work.** Qwen's GAN-fingerprint claims on face swaps disappear.
 - **The verifier is a safety net, not a crutch.** No GPT-OSS answer failed a check, so verified equals grounded
-  for them; for Qwen the revision request recovers a quarter of the invalid replies.
-- **Method consistency is mixed.** It rises sharply for Qwen but falls slightly for GPT-OSS, which favour the
-  teeth/mouth cards; the held-out test (phase 5) decides whether this is noise.
+  for them; for Qwen the revision request recovers about half of the invalid replies (17 → 9).
+- **Method consistency is mixed.** It rises sharply for Qwen but falls slightly for GPT-OSS (GPT-OSS-20B names
+  teeth/mouth artefacts for most fakes); the held-out test (phase 5) decides whether this is noise.
 
 ## Evaluation (phase 5)
 Notebook 07 runs the frozen phase 3 and phase 4 pipeline on a **held-out test sample**. The pilot was used for
@@ -288,35 +289,40 @@ hallucination flags only).
 ```bash
 python app.py [--checkpoint path/to/best.pt] [--share]     # http://localhost:7860
 ```
-A Gradio app (`app.py`, `src/demo/`) with two pages:
-- **Live analysis.** Upload a face image or a video frame and pick the explanation model (GPT-OSS-120B,
-  GPT-OSS-20B or Qwen3.8-27B on Groq). A progress strip under the upload box lights up Detect → Heatmap →
-  Retrieve → Explain → Check, with each step's time, and the panels fill in as the steps finish:
-  - the verdict with P(fake), the decision threshold and the confidence level
-  - the face the detector saw, the Grad-CAM++ heatmap with the hottest area boxed, and every facial-region box
-    coloured by its heat concentration (blue = cold, red = hottest) and labelled with it, and a list of all
-    regions ranked by heat (the prominent ones above a divider). They show what made the detector call the face fake (or, for a REAL verdict, real)
-  - the demo uses **atomic regions** instead of the 9 combined ones of phases 2–5: eyes, nose, teeth, mouth, cheeks,
-    hairline, forehead, chin, left/right jawline, face boundary and background. YuNet still finds and crops the
-    face (the crop the detector was trained on); MediaPipe's 478-point face mesh then places every region on the
-    crop. *Teeth* is the opening between the inner lips and exists only when the mouth is open (inner-lip gap above
-    8% of the mouth's width), so a closed mouth gets no teeth region and no teeth cards; the hairline is a band
-    above the mesh, which stops at the upper forehead. If MediaPipe finds no face, or is not installed, the boxes
-    come from YuNet's 5 points (the combined boxes split into their parts) without teeth
-  - the evidence summary (a collapsed section under the results), which is all the LLM reads. Unlike phases 3–5, which list only the top 3 regions, the
-    demo's summary lists every region with its concentration and share of heat, and names the **prominent
-    regions**: every region whose evidence is at least half as concentrated as in the hottest one
-    (`PROMINENT` in `src/xai/gradcam.py`). Card retrieval searches for the prominent regions (matched against the
-    cards' atomic regions) and adds a card for any prominent region the others miss
-  - the evidence cards retrieved from the corpus (cited cards highlighted)
-  - the grounded explanation: one **finding per prominent region**, hottest first, each with its own artefact type
-    and the cards cited for it, then sentences that cover every finding. Phases 3–5 name a single region. Each
-    finding shows where its region ranks by heat and whether a card cited for it backs it (FAKE: an artefact card
-    of that type listing the region; REAL: an authentic card listing it). A one-line check says how many prominent
-    regions the answer covers, how many findings are backed, and whether it cited ids it was not given
-- **Gallery · offline.** Test images analysed in advance by every model, so this page works without internet or
-  an API key. The real label (dataset, manipulation method, and whether the detector was right) is shown with
-  each result. It includes one or two images the detector gets wrong.
+A Gradio app (`app.py`, `src/demo/`) with two pages.
+
+**Live analysis.** Upload a face image or a video frame and pick the explanation model (GPT-OSS-120B, GPT-OSS-20B
+or Qwen3.8-27B on Groq). A progress strip under the upload box lights up Detect → Heatmap → Retrieve → Explain →
+Check, with each step's time, and the panels fill in as the steps finish:
+- the verdict with P(fake), the decision threshold and the confidence level
+- the face the detector saw, the Grad-CAM++ heatmap with the hottest area boxed, and every facial-region box
+  coloured by its heat concentration (blue = cold, red = hottest) and labelled with it, next to a list of all
+  regions ranked by heat (the prominent ones above a divider)
+- the evidence cards retrieved from the corpus, with the cited cards highlighted
+- the grounded explanation: one **finding per prominent region**, hottest first, each with its own artefact type
+  and the cards cited for it, then sentences that cover every finding. Each finding shows where its region ranks
+  by heat and whether a cited card backs it (FAKE: an artefact card of that type listing the region; REAL: an
+  authentic card listing it). A one-line check says how many prominent regions the answer covers, how many
+  findings are backed, and whether it cited ids it was not given
+- the evidence summary, the only input the LLM reads (a collapsed section under the results)
+
+**Gallery · offline.** Test images analysed in advance by every model, so this page works without internet or an
+API key. Each result shows the real label (dataset, manipulation method, and whether the detector was right); the
+gallery includes one or two images the detector gets wrong.
+
+**How the demo differs from phases 3–5.** The phases name a single region from the top 3 and use the 9 combined
+regions; the demo explains every prominent region and uses finer regions:
+- **Atomic regions:** eyes, nose, teeth, mouth, cheeks, hairline, forehead, chin, left/right jawline, face
+  boundary and background. YuNet still finds and crops the face (the crop the detector was trained on), then
+  MediaPipe's 478-point face mesh places every region on the crop. *Teeth* is the opening between the inner lips
+  and exists only when the mouth is open (inner-lip gap above 8% of the mouth's width), so a closed mouth gets no
+  teeth region and no teeth cards; the hairline is a band above the mesh, which stops at the upper forehead. If
+  MediaPipe finds no face or is not installed, the boxes come from YuNet's 5 points (the combined boxes split into
+  their parts), without teeth.
+- **Prominent regions:** every region whose evidence is at least half as concentrated as the hottest one
+  (`PROMINENT` in `src/xai/gradcam.py`). The evidence summary lists every region with its concentration and share
+  of heat and names the prominent ones; retrieval searches for them (matched against the cards' atomic regions)
+  and adds a card for any prominent region the others miss.
 
 The live page needs EfficientNet-B0's `best.pt` (default `outputs/checkpoints/best.pt`) and `GROQ_API_KEY` (set in
 the environment or in `.env`).
@@ -324,10 +330,11 @@ The gallery (`outputs/demo/gallery/`) is built on Kaggle by notebook 08, or loca
 `python -m src.demo.pipeline --data FF++=<face crops> CelebDF=<face crops>`.
 
 ## Limitations
-- **The detector's generalisation.** All six FF++-trained models key partly on blur and low resolution: a mild
-  Gaussian blur (radius 1.5) turns a real photo's P(fake) from about 0.02 into 0.99, while sharp AI-edited stills
-  score as REAL (0.001–0.06). Fully AI-generated portraits are out of scope (the training data has only face swaps
-  and re-enactments), and Celeb-DF accuracy is lower than FF++. Blur/resize augmentation, diffusion-generated
+- **The detector's generalisation.** The FF++-trained models key partly on blur and low resolution: a mild
+  Gaussian blur (radius 1.5) turns a real photo from P(fake) ≈ 0 into ≈ 1 for six of the seven models (all but
+  MesoNet-4), while sharp AI-generated or AI-edited portraits score as REAL (P(fake) below 0.3 in our tests). Fully
+  AI-generated faces are out of scope (the training data has only face swaps and re-enactments), and Celeb-DF
+  accuracy is lower than FF++. Blur/resize augmentation, diffusion-generated
   fakes in training, calibration and an out-of-distribution warning are the natural next steps.
 - **Heatmaps look alike.** Grad-CAM++ maps are similar across images (a central blob), so REAL verdicts tend to
   retrieve the same cards.
@@ -375,7 +382,8 @@ kaggle/          Kaggle notebooks 01–08 (kaggle/later/00_all_in_one: an older 
 src/xai/         Grad-CAM++, heatmap evaluation, model selection scorecard
 src/explain/     evidence-card loader, retriever, LLM providers + explainer
 src/eval/        metrics, verifier (grounding checks + NLI), phase 5 experiment (sample, baselines, scoring) and statistics
-src/demo/        demo pipeline (step by step, offline gallery) and panel HTML for app.py
+src/demo/        demo pipeline (step by step, offline gallery) and panel HTML
+app.py           the demo app (Gradio)
 corpus/          evidence cards (one claim each, with regions, families and source)
 data/ outputs/   (git-ignored)
 ```
