@@ -67,7 +67,7 @@ per-method AUC, params/GFLOPs/throughput/training time, paired significance test
 
 ## Explain one image
 ```bash
-python -m src.xai.gradcam --image path/to/face.jpg --checkpoint outputs/checkpoints/convnext_tiny/best.pt
+python -m src.xai.gradcam --image path/to/face.jpg     # default: outputs/checkpoints/best.pt (EfficientNet-B0)
 ```
 Facial regions (eyes, nose, mouth, cheeks, forehead, chin) are placed from YuNet's 5 landmarks on each face.
 Regions are ranked by **concentration** (mean heat inside the region relative to the image mean), so large
@@ -210,6 +210,30 @@ Notebook 06 also scores phase 3's answers with the same checks (with the new tax
 between models on the artefact type (Fleiss' κ), **method consistency** (the claimed artefact is documented for
 the image's true manipulation family, which the LLM never sees) and the rate of GAN-fingerprint claims.
 
+### Pilot results (notebook 06)
+The same 48 pilot images as phase 3, re-scored with citation ids normalised. GPT-OSS figures are from a complete
+run; Qwen's grounded answers come from a run with a 900-token output limit, which cut off 17 of its 48 replies
+(later runs use 1,000 tokens).
+
+| | GPT-OSS-120B | GPT-OSS-20B | Qwen3.8-27B |
+|---|---|---|---|
+| Supported sentences (NLI), ungrounded → grounded | 0.29 → **0.45** | 0.14 → **0.25** | 0.13 → **0.47** |
+| Contradicted sentences | 0.04 → **0** | 0.05 → **0** | 0.03 → **0** |
+| GAN-fingerprint claims (fake verdicts) | 0 → 0 | 0.06 → **0** | 0.27 → **0** |
+| Artefact plausible for the regions | 0.94 → **1.00** | 0.92 → **1.00** | 0.75 → **1.00** |
+| Artefact backed by a cited card (grounded) | 100% | 100% | 100% |
+| Method consistent | 0.89 → 0.85 | 0.82 → 0.70 | 0.65 → 0.92 |
+| Valid output, grounded → verified | 100% → 100% | 100% → 100% | 65% → 81% |
+
+- **Grounding makes explanations traceable.** Every model writes more sentences supported by the evidence and
+  the cited cards, and none contradicts them. On these images the supported-share gain is significant for all
+  three models (paired Wilcoxon, Holm-corrected p ≤ 0.02).
+- **Scope cards work.** Qwen's GAN-fingerprint claims on face swaps disappear.
+- **The verifier is a safety net, not a crutch.** No GPT-OSS answer failed a check, so verified equals grounded
+  for them; for Qwen the revision request recovers a quarter of the invalid replies.
+- **Method consistency is mixed.** It rises sharply for Qwen but falls slightly for GPT-OSS, which favour the
+  teeth/mouth cards; the held-out test (phase 5) decides whether this is noise.
+
 ## Evaluation (phase 5)
 Notebook 07 runs the frozen phase 3 and phase 4 pipeline on a **held-out test sample**. The pilot was used for
 tuning (output limits, citation parsing, when to revise), so its numbers are not reported as results.
@@ -299,11 +323,24 @@ the environment or in `.env`).
 The gallery (`outputs/demo/gallery/`) is built on Kaggle by notebook 08, or locally with
 `python -m src.demo.pipeline --data FF++=<face crops> CelebDF=<face crops>`.
 
+## Limitations
+- **The detector's generalisation.** All six FF++-trained models key partly on blur and low resolution: a mild
+  Gaussian blur (radius 1.5) turns a real photo's P(fake) from about 0.02 into 0.99, while sharp AI-edited stills
+  score as REAL (0.001–0.06). Fully AI-generated portraits are out of scope (the training data has only face swaps
+  and re-enactments), and Celeb-DF accuracy is lower than FF++. Blur/resize augmentation, diffusion-generated
+  fakes in training, calibration and an out-of-distribution warning are the natural next steps.
+- **Heatmaps look alike.** Grad-CAM++ maps are similar across images (a central blob), so REAL verdicts tend to
+  retrieve the same cards.
+- **What the checks measure.** NLI measures attribution, not truth; the language checks are keyword-based; the
+  35 cards are marked `checked: no` until compared with their papers.
+- **Sample size and noise.** The pilot has 48 images and identical runs differed by up to 6 points; the phase 5
+  test set (96 images) is the basis for conclusions.
+
 ## Running on Kaggle
-Done: model training and evaluation (01–03), Grad-CAM++ explainability (04), choosing the main detector,
-EfficientNet-B0 (04b), and ungrounded LLM explanations (05; prompt and settings frozen as the phase 4 baseline).
-RAG-grounded explanations (06) are done on the pilot. Current phase: **evaluation** (notebook 07, one batch per
-day). The demo (08) builds the offline gallery and launches the app with a public link.
+The notebooks run the whole project in order: face extraction (01, 01b), training and evaluation (02, 03),
+Grad-CAM++ (04), choosing the main detector with a pre-declared scorecard (04b, `src/xai/model_selection.py`),
+ungrounded explanations (05), grounded explanations (06), the held-out evaluation (07, one batch per day) and the
+demo (08), which builds the offline gallery and launches the app with a public link.
 
 Each notebook's saved output is added as an input to the next one (**Save Version → Save & Run All (Commit)**,
 then **Add Input → Your Work → Notebooks**).
@@ -331,11 +368,11 @@ Use a T4, not a P100 (recent PyTorch builds no longer support it).
 
 ## Layout
 ```
-src/classifier/  model, FF++ frame extraction, dataset, training, evaluation
+src/classifier/  model, FF++ / Celeb-DF frame extraction, dataset, training, evaluation, model comparison, leakage audit
 src/faces.py     face detection + cropping (extraction and UI)
 src/kaggle_utils.py  locate earlier notebooks' outputs on Kaggle
-kaggle/          Kaggle notebooks for the current phase (kaggle/later/: parked phases)
-src/xai/         Grad-CAM++
+kaggle/          Kaggle notebooks 01–08 (kaggle/later/00_all_in_one: an older single-notebook version)
+src/xai/         Grad-CAM++, heatmap evaluation, model selection scorecard
 src/explain/     evidence-card loader, retriever, LLM providers + explainer
 src/eval/        metrics, verifier (grounding checks + NLI), phase 5 experiment (sample, baselines, scoring) and statistics
 src/demo/        demo pipeline (step by step, offline gallery) and panel HTML for app.py
