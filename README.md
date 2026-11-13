@@ -428,10 +428,12 @@ then **Add Input → Your Work → Notebooks**).
 | `08_demo` | 01a, 01b, 02a (the copy with EfficientNet-B0); secret `GROQ_API_KEY` | GPU T4 | the offline gallery (one correctly classified test image per manipulation method and dataset plus up to two the detector gets wrong, each explained by all three models), then the demo app with a temporary public link. Download `outputs/demo/gallery/` to run the demo on your own computer |
 
 v2 run order: 01b (with train) → 01c → 01d → 02a (two copies) → 02b → 02c → 03, then 04 onwards on the new
-checkpoints. With `SAMPLES_PER_EPOCH = 60000`, a v2 epoch costs about the same as a v1 epoch, so training all seven
-models still takes roughly 7–8 GPU-hours. Kaggle stops sessions at 12 h, so `02a_train_classifiers` skips models
-that would not fit. To be safe, run two copies of it with the model list split between them. `02c_calibrate` and
-`03_evaluate` collect checkpoints from every attached copy.
+checkpoints. A v2 epoch is `SAMPLES_PER_EPOCH = 60000` images, about twice a v1 epoch, so training all seven
+models takes roughly 12–14 GPU-hours (EfficientNet-B0 ~80 min, B4 ~3.3 h). Kaggle stops sessions at 12 h, so
+`02a_train_classifiers` skips models that would not fit. Run two copies with the model list split between them
+(copy A = B0, Meso, ResNet, ViT, ~6 h; copy B = Xception, B4, ConvNeXt, ~7.5 h). `02c_calibrate` and
+`03_evaluate` collect checkpoints from every attached copy. The whole v2 sequence uses about 15–17 GPU-hours
+(02b ~45 min, 03 ~1.5–2 h) and 2–4 CPU-hours.
 
 Every notebook needs **Internet on**. The project code is cloned from the repo (`dev` branch). If the repo is
 private, add a `GITHUB_TOKEN` secret, or upload a zip of the project as a Kaggle dataset and attach it.
