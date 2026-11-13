@@ -5,7 +5,7 @@ those explanations are grounded or hallucinated.
 
 | Phase | What | Where |
 |---|---|---|
-| 1 | EfficientNet-B0 classifier vs. 6 baselines; trained on FF++, tested on FF++ and Celeb-DF | `src/classifier/` |
+| 1 | EfficientNet-B0 classifier vs. 6 baselines. **v2:** trained on FF++, Celeb-DF, FFHQ and CelebA-HQ with self-blended fakes and shared degradation; CLIP probe for synthetic faces; calibrated REAL / UNCERTAIN / FAKE verdict; DFDC as the cross-dataset test | `src/classifier/` |
 | 2 | Grad-CAM++ localisation + facial-region attribution | `src/xai/gradcam.py` |
 | 3 | Ungrounded LLM explanation (GPT-OSS-120B/20B and Qwen3.8-27B on Groq's free tier; other providers also work) | `src/explain/llm.py`, `src/explain/providers.py` |
 | 4 | RAG-grounded explanation: evidence cards, hybrid retrieval, cited answers, verifier | `corpus/`, `src/explain/retriever.py`, `src/eval/verify.py` |
@@ -64,6 +64,63 @@ python -m src.classifier.compare --roots outputs/checkpoints --datasets FF++=dat
 `compare` writes `outputs/compare/`: AUC with 95% CIs (bootstrap over videos), accuracy/F1, video-level AUC,
 per-method AUC, params/GFLOPs/throughput/training time, paired significance tests for every pair of models, and figures
 (ROC, accuracy vs. compute, in-dataset vs. cross-dataset AUC).
+
+## Classifier v2: generalisation, calibration and a three-way verdict
+The v1 models (FF++ only) scored well on FF++ but keyed on image quality. A mildly blurred real photo scored
+P(fake) ≈ 1, sharp AI-edited faces passed as real, and the decision threshold sat around 0.9–0.98, so many real
+photos were called fake. v2 changes the training data, the augmentation and how the score is read:
+
+```
+real crops (FF++, Celeb-DF, FFHQ, CelebA-HQ) ──┬────────────────── real (0) ──┐
+                                               └── self-blend ──── fake (1) ──┤  same degradation for all
+dataset fakes (FF++ methods, Celeb-DF) ─────────────────────────── fake (1) ──┘  (blur / resize / JPEG / noise)
+                                                                      │
+        02a: EfficientNet-B0 + 6 baselines          02b: frozen CLIP ViT-L/14 + logistic probe
+                         │                               (reals vs. StyleGAN, diffusion, FF++, Celeb-DF fakes)
+                         └──── 02c: temperature, three-way thresholds, OOD check, CNN + CLIP fusion
+                                                                      │
+                                         REAL / UNCERTAIN / FAKE  +  out-of-distribution flag
+```
+
+- **Self-blended images** (Shiohara & Yamasaki, CVPR 2022; `src/classifier/sbi.py`):
+  - A real crop is blended with a slightly altered copy of itself through a soft face mask.
+  - The fake has a blending seam and a colour/sharpness mismatch, but no generator-specific artefacts, so the model learns blending traces rather than FF++'s methods.
+  - The mask landmarks come from MediaPipe's face mesh, cached once per dataset (`landmarks.py`).
+  - `python -m src.classifier.sbi --demo` draws original / self-blended / mask / degraded pairs.
+- **More real faces, same degradation** (`augment.py`):
+  - FFHQ and CelebA-HQ photos are re-cropped with the same detector and 1.3x crop as the video frames (`image_extract.py`).
+  - Every training image, real or fake, gets the same random blur, downscale-upscale, JPEG, noise and sharpening, so image quality stops predicting the label.
+- **Mixed training** (`dataset.MixedTrainSet`, `train.py --data NAME=root ...`):
+  - Each epoch is 40% real, 35% self-blended and 25% dataset fakes, and is `--samples-per-epoch` images long. Each dataset gets the same weight within its group.
+  - Celeb-DF's non-test videos are now training data (`celebdf_extract.py --with-train`), so Celeb-DF test is in-domain.
+  - **DFDC** (`dfdc_extract.py`) is the cross-dataset test. It is never trained, early-stopped or calibrated on.
+- **CLIP probe** (`clip_probe.py`, after Ojha et al., CVPR 2023): a logistic regression on frozen CLIP ViT-L/14 features (loaded via timm). It is trained on reals vs. StyleGAN, diffusion, FF++ and Celeb-DF fakes, and covers fully generated faces, which the CNNs never see.
+- **Calibration** (`calibrate.py`, validation data only):
+  - Temperature scaling for each model.
+  - Two thresholds: at most 5% of validation real faces score above `t_fake` (FAKE), and at most 10% of validation fakes score below `t_real` (REAL). Anything in between is UNCERTAIN.
+  - A Mahalanobis out-of-distribution check on the pooled features.
+  - A logistic-regression fusion of each CNN with CLIP.
+
+  `verdict.Detector` applies all of this to one image.
+- **Evaluation** (`compare.py`, `robustness.py`):
+  - AUC with video-bootstrap CIs on the two-class sets.
+  - Three-way rates on every set, including the real-only (FFHQ, CelebA-HQ) and fake-only (StyleGAN, diffusion) ones: coverage, accuracy on decided images, FPR, FNR, ECE and OOD rate.
+  - Robustness curves for blur, JPEG and resizing.
+  - The blur test: the share of real photos called FAKE, sharp vs. blur radius 1.5.
+  - v1 vs. v2.
+
+```bash
+python -m src.classifier.celebdf_extract --src path/to/Celeb-DF-v2 --out data_celebdf --with-train
+python -m src.classifier.image_extract --out data_hq --source "FFHQ=real:path/to/ffhq/*.jpg" --source "StyleGAN=fake:path/to/stylegan/*.jpg"
+python -m src.classifier.dfdc_extract --src path/to/dfdc --out data_dfdc
+python -m src.classifier.landmarks --dataset FF++=data --dataset CelebDF=data_celebdf --dataset FFHQ=data_hq/ffhq --out landmarks
+python -m src.classifier.train --data FF++=data --data CelebDF=data_celebdf --data FFHQ=data_hq/ffhq --landmarks landmarks
+python -m src.classifier.clip_probe --out outputs/clip --data FF++=data --data FFHQ=data_hq/ffhq --data StyleGAN=data_hq/stylegan
+python -m src.classifier.calibrate --roots outputs/checkpoints --clip outputs/clip --out outputs/calibration
+python -m src.classifier.compare --roots outputs/checkpoints --datasets FF++=data FFHQ=data_hq/ffhq DFDC=data_dfdc --calibration outputs/calibration --clip-probe outputs/clip/probe.pt
+```
+The explanation stages (phases 2–6) still read the two-way verdict from the checkpoint's `threshold` (Youden J on
+the pooled validation set). Moving them to the three-way verdict is the next step.
 
 ## Explain one image
 ```bash
@@ -334,8 +391,8 @@ The gallery (`outputs/demo/gallery/`) is built on Kaggle by notebook 08, or loca
   Gaussian blur (radius 1.5) turns a real photo from P(fake) ≈ 0 into ≈ 1 for six of the seven models (all but
   MesoNet-4), while sharp AI-generated or AI-edited portraits score as REAL (P(fake) below 0.3 in our tests). Fully
   AI-generated faces are out of scope (the training data has only face swaps and re-enactments), and Celeb-DF
-  accuracy is lower than FF++. Blur/resize augmentation, diffusion-generated
-  fakes in training, calibration and an out-of-distribution warning are the natural next steps.
+  accuracy is lower than FF++ (v1). Classifier v2 (above) addresses this with blur/resize augmentation, diffusion-generated
+  fakes (CLIP probe), calibration and an out-of-distribution warning; its results come from notebook 03.
 - **Heatmaps look alike.** Grad-CAM++ maps are similar across images (a central blob), so REAL verdicts tend to
   retrieve the same cards.
 - **What the checks measure.** NLI measures attribution, not truth; the language checks are keyword-based; the
@@ -344,7 +401,8 @@ The gallery (`outputs/demo/gallery/`) is built on Kaggle by notebook 08, or loca
   test set (96 images) is the basis for conclusions.
 
 ## Running on Kaggle
-The notebooks run the whole project in order: face extraction (01, 01b), training and evaluation (02, 03),
+The notebooks run the whole project in order: face extraction (01a–01d), training, CLIP probe and calibration
+(02a–02c), evaluation (03),
 Grad-CAM++ (04), choosing the main detector with a pre-declared scorecard (04b, `src/xai/model_selection.py`),
 ungrounded explanations (05), grounded explanations (06), the held-out evaluation (07, one batch per day) and the
 demo (08), which builds the offline gallery and launches the app with a public link.
@@ -354,20 +412,26 @@ then **Add Input → Your Work → Notebooks**).
 
 | Notebook | Inputs | Accelerator | Produces |
 |---|---|---|---|
-| `01_extract_faces` | FF++ video dataset | None (CPU) | FF++ face crops (train/val/test) |
-| `01b_extract_celebdf` | Celeb-DF v2 video dataset | None (CPU) | Celeb-DF official test-set face crops |
-| `02_train` | 01 | GPU T4 | all models' checkpoints + training curves |
-| `03_evaluate` | 01, 01b, 02 (+ copies of 02) | GPU T4 | comparison tables, significance tests, figures |
-| `04_gradcam` | 01, 01b, 02 (+ copies of 02) | GPU T4 | heatmap gallery, deletion/insertion faithfulness, region attribution |
-| `04b_model_selection` | 03, 04 (committed outputs) | None | accuracy vs. explainability charts, pre-declared scorecard to pick the main model |
-| `05_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0); secret `GROQ_API_KEY` | GPU T4 (detector only) | evidence summaries + ungrounded explanations from GPT-OSS-120B, GPT-OSS-20B and Qwen3.8-27B (Groq free tier), with prompts and raw replies; worked examples and pilot consistency rates |
-| `06_grounded_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0), 05 (committed output); secret `GROQ_API_KEY` | GPU T4 (detector, embeddings, NLI) | retriever comparison; grounded and verified explanations from the same three models on the same images; all three conditions scored with the same checks; model agreement; a sentence sample for checking the NLI model by hand. One run uses up to ~180K Groq tokens per model, so run each model at most once per day (`RUN_TAG`); `RUN_MODELS` re-runs only some models and loads the others from an attached earlier output. Qwen gets a 1,000-token output limit and 60 s spacing (Groq caps it at 1K output tokens per minute) |
-| `07_evaluation` | 01, 01b, 02 (the copy with EfficientNet-B0), 05 (committed output); from batch 1 on the previous output of 07; secret `GROQ_API_KEY` | GPU T4 (detector, embeddings, NLI) | held-out test sample (96 images) explained by the three models in all three conditions, run as `BATCH` 0, 1, 2 on separate days (each run carries the earlier batches forward); per-answer scores, no-LLM baselines, paired tests with bootstrap intervals and Holm correction, model agreement, breakdowns, a forest plot and an NLI check sample. `BATCH = None` re-runs only the analysis |
-| `08_demo` | 01, 01b, 02 (the copy with EfficientNet-B0); secret `GROQ_API_KEY` | GPU T4 | the offline gallery (one correctly classified test image per manipulation method and dataset plus up to two the detector gets wrong, each explained by all three models), then the demo app with a temporary public link. Download `outputs/demo/gallery/` to run the demo on your own computer |
+| `01a_extract_ffpp` | FF++ video dataset | None (CPU) | FF++ face crops (train/val/test) |
+| `01b_extract_celebdf` | Celeb-DF v2 video dataset | None (CPU) | Celeb-DF crops: the official test split, plus (v2, `WITH_TRAIN`) train/val from the other videos |
+| `01c_extract_hq` | 140k Real and Fake Faces (FFHQ + StyleGAN), a CelebA-HQ set, a diffusion-face set; 01a, 01b | None (CPU) | `data_hq/{ffhq,celebahq,stylegan,diffusion}` crops + `landmarks/<dataset>.npz` for every real train/val crop |
+| `01d_extract_dfdc` | DFDC videos with `metadata.json` | None (CPU) | DFDC test crops (cross-dataset test only) |
+| `02a_train_classifiers` | 01a, 01b, 01c | GPU T4 | all models trained on the v2 mix, with `val_preds.npz` + `train_feats.npy` for calibration |
+| `02b_train_clip` | 01a, 01b, 01c | GPU T4 | CLIP ViT-L/14 probe (`clip/probe.pt`) + validation scores |
+| `02c_calibrate` | 02a (+ copies), 02b | None (CPU) | `calibration/calibration.json`: temperatures, three-way thresholds, OOD statistics, CNN + CLIP fusion |
+| `03_evaluate` | 01a–01d, 02a (+ copies), 02b, 02c; optionally the v1 checkpoints | GPU T4 | leakage audit; two-way and three-way metrics on every test set incl. DFDC; robustness curves + blur test; v1 vs. v2 |
+| `04_gradcam` | 01a, 01b, 02a (+ copies) | GPU T4 | heatmap gallery, deletion/insertion faithfulness, region attribution |
+| `04b_model_selection` | 03, 04 (committed outputs) | None | accuracy vs. explainability charts, pre-declared scorecard to pick the main model (v2 adds DFDC AUC and real-photo false alarms) |
+| `05_explanations` | 01a, 01b, 02a (the copy with EfficientNet-B0); secret `GROQ_API_KEY` | GPU T4 (detector only) | evidence summaries + ungrounded explanations from GPT-OSS-120B, GPT-OSS-20B and Qwen3.8-27B (Groq free tier), with prompts and raw replies; worked examples and pilot consistency rates |
+| `06_grounded_explanations` | 01a, 01b, 02a (the copy with EfficientNet-B0), 05 (committed output); secret `GROQ_API_KEY` | GPU T4 (detector, embeddings, NLI) | retriever comparison; grounded and verified explanations from the same three models on the same images; all three conditions scored with the same checks; model agreement; a sentence sample for checking the NLI model by hand. One run uses up to ~180K Groq tokens per model, so run each model at most once per day (`RUN_TAG`); `RUN_MODELS` re-runs only some models and loads the others from an attached earlier output. Qwen gets a 1,000-token output limit and 60 s spacing (Groq caps it at 1K output tokens per minute) |
+| `07_evaluation` | 01a, 01b, 02a (the copy with EfficientNet-B0), 05 (committed output); from batch 1 on the previous output of 07; secret `GROQ_API_KEY` | GPU T4 (detector, embeddings, NLI) | held-out test sample (96 images) explained by the three models in all three conditions, run as `BATCH` 0, 1, 2 on separate days (each run carries the earlier batches forward); per-answer scores, no-LLM baselines, paired tests with bootstrap intervals and Holm correction, model agreement, breakdowns, a forest plot and an NLI check sample. `BATCH = None` re-runs only the analysis |
+| `08_demo` | 01a, 01b, 02a (the copy with EfficientNet-B0); secret `GROQ_API_KEY` | GPU T4 | the offline gallery (one correctly classified test image per manipulation method and dataset plus up to two the detector gets wrong, each explained by all three models), then the demo app with a temporary public link. Download `outputs/demo/gallery/` to run the demo on your own computer |
 
-Training all seven models takes roughly 7–8 GPU-hours. Kaggle stops sessions at 12 h, so `02_train` skips models
-that would not fit; to be safe, run two copies of it with the model list split between them. `03_evaluate` collects
-checkpoints from every attached copy.
+v2 run order: 01b (with train) → 01c → 01d → 02a (two copies) → 02b → 02c → 03, then 04 onwards on the new
+checkpoints. With `SAMPLES_PER_EPOCH = 60000`, a v2 epoch costs about the same as a v1 epoch, so training all seven
+models still takes roughly 7–8 GPU-hours. Kaggle stops sessions at 12 h, so `02a_train_classifiers` skips models
+that would not fit. To be safe, run two copies of it with the model list split between them. `02c_calibrate` and
+`03_evaluate` collect checkpoints from every attached copy.
 
 Every notebook needs **Internet on**. The project code is cloned from the repo (`dev` branch). If the repo is
 private, add a `GITHUB_TOKEN` secret, or upload a zip of the project as a Kaggle dataset and attach it.
@@ -375,10 +439,11 @@ Use a T4, not a P100 (recent PyTorch builds no longer support it).
 
 ## Layout
 ```
-src/classifier/  model, FF++ / Celeb-DF frame extraction, dataset, training, evaluation, model comparison, leakage audit
+src/classifier/  model, extraction (FF++, Celeb-DF, HQ photos, DFDC), landmarks, self-blending, augmentation, training,
+                 CLIP probe, calibration + three-way verdict, model comparison, robustness, leakage audit
 src/faces.py     face detection + cropping (extraction and UI)
 src/kaggle_utils.py  locate earlier notebooks' outputs on Kaggle
-kaggle/          Kaggle notebooks 01–08 (kaggle/later/00_all_in_one: an older single-notebook version)
+kaggle/          Kaggle notebooks 01a–08 (kaggle/later/00_all_in_one: an older single-notebook version)
 src/xai/         Grad-CAM++, heatmap evaluation, model selection scorecard
 src/explain/     evidence-card loader, retriever, LLM providers + explainer
 src/eval/        metrics, verifier (grounding checks + NLI), phase 5 experiment (sample, baselines, scoring) and statistics

@@ -8,10 +8,18 @@ with published numbers. Expected layout (folders may be nested anywhere under --
 Labels come from the folder name (Celeb-synthesis = fake), not the list's label column. The same face
 detector and crop as FaceForensics++ are used, so train and test crops look alike.
 
+--with-train also extracts every video NOT in the official test list into train/val (90/10, split by the
+identity in the frame: idN for Celeb-real and Celeb-synthesis, each YouTube-real video on its own), with more
+frames per real video than per fake one so the classes roughly balance. Celeb-DF's official protocol reuses the
+same 59 celebrities in its test list, so with --with-train Celeb-DF test is in-domain; DFDC (dfdc_extract.py)
+is then the cross-dataset test.
+
     python -m src.classifier.celebdf_extract --src /path/to/Celeb-DF-v2 --out data_celebdf --frames 32
+    python -m src.classifier.celebdf_extract --src /path/to/Celeb-DF-v2 --out data_celebdf --frames 32 --with-train
 """
 import argparse
 import csv
+import hashlib
 from collections import Counter
 from multiprocessing import Pool
 from pathlib import Path
@@ -34,6 +42,18 @@ def index_videos(src: Path):
         if folder in REAL_DIRS or folder == FAKE_DIR:
             index[(folder, p.name)] = p
     return index
+
+
+def identity(path: Path) -> str:
+    """The person in the frame: idN for Celeb-real / Celeb-synthesis (target id), the video for YouTube-real."""
+    if path.parent.name.lower() == "youtube-real":
+        return f"yt{path.stem}"
+    return path.stem.split("_")[0]
+
+
+def train_val_split(path: Path, val_share: float = 0.1) -> str:
+    u = int(hashlib.md5(identity(path).encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
+    return "val" if u < val_share else "train"
 
 
 def official_test_list(src: Path, index):
@@ -60,6 +80,9 @@ def main():
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--frames", type=int, default=32, help="frames per video (real and fake)")
     ap.add_argument("--all", action="store_true", help="use every video instead of the official test list")
+    ap.add_argument("--with-train", action="store_true", help="also extract the non-test videos into train/val")
+    ap.add_argument("--train-real-frames", type=int, default=20, help="frames per real train/val video")
+    ap.add_argument("--train-fake-frames", type=int, default=3, help="frames per fake train/val video")
     ap.add_argument("--workers", type=int, default=4)
     args = ap.parse_args()
 
@@ -75,9 +98,21 @@ def main():
     for p in videos:
         label = "real" if p.parent.name.lower() in REAL_DIRS else METHOD
         jobs.append((p, label, "test", args.frames, str(args.out)))
-    print(Counter(p.parent.name for p in videos))
-    for cls in ("real", "fake"):
-        (args.out / "test" / cls).mkdir(parents=True, exist_ok=True)
+    print("test:", Counter(p.parent.name for p in videos))
+    if args.with_train:
+        if args.all:
+            raise SystemExit("--with-train needs the official test list (drop --all)")
+        test = set(videos)
+        rest = sorted(set(index.values()) - test)
+        for p in rest:
+            real = p.parent.name.lower() in REAL_DIRS
+            split = train_val_split(p)
+            jobs.append((p, "real" if real else METHOD, split,
+                         args.train_real_frames if real else args.train_fake_frames, str(args.out)))
+        print("train/val:", Counter(f"{train_val_split(p)}/{p.parent.name}" for p in rest))
+    for split in sorted({j[2] for j in jobs}):
+        for cls in ("real", "fake"):
+            (args.out / split / cls).mkdir(parents=True, exist_ok=True)
 
     ensure_yunet()  # download once, before the workers start
     rows = []
@@ -89,8 +124,8 @@ def main():
 
     with open(args.out / "manifest.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["split", "label", "method", "video", "frame", "file"])
-        w.writerows(sorted(rows))
+        w.writerow(["split", "label", "method", "video", "frame", "file", "dataset"])
+        w.writerows(sorted(r + (METHOD,) for r in rows))
     print(dict(Counter(f"{r[0]}/{r[1]}" for r in rows)))
 
 

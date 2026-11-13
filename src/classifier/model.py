@@ -53,6 +53,11 @@ class DeepfakeClassifier(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.head(self.backbone(x))
 
+    def forward_features(self, x: torch.Tensor):
+        """(logit, pooled backbone features): the features feed the out-of-distribution check (calibrate.py)."""
+        f = self.backbone(x)
+        return self.head(f), f
+
     @property
     def is_vit(self) -> bool:
         return hasattr(self.backbone, "blocks") and hasattr(self.backbone, "patch_embed")
@@ -97,6 +102,7 @@ def load_model(checkpoint, device="cpu") -> DeepfakeClassifier:
     model = DeepfakeClassifier(backbone=ckpt.get("backbone", DEFAULT_BACKBONE), pretrained=False)
     model.load_state_dict(ckpt["model"])
     model.threshold = float(ckpt.get("threshold", 0.5))  # decision threshold tuned on validation
+    model.version = ckpt.get("version", 1)
     return model.to(device).eval()
 
 

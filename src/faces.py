@@ -28,6 +28,7 @@ YUNET_PATH = OUTPUT_DIR / "models" / "face_detection_yunet_2023mar.onnx"
 FACE_MESH_URL = ("https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/"
                  "face_landmarker.task")
 FACE_MESH_PATH = OUTPUT_DIR / "models" / "face_landmarker.task"
+DETECT_SIDE = 640  # longest side YuNet sees; larger images are detected on a downscaled copy
 
 
 def _create_yunet(path):
@@ -100,9 +101,11 @@ class FaceMesh:
 
 
 class FaceCropper:
-    def __init__(self, scale: float = 1.3, size: int = 256, strict: bool = False):
-        """strict=True: YuNet must already be available (see ensure_yunet); never fall back to Haar."""
-        self.scale, self.size = scale, size
+    def __init__(self, scale: float = 1.3, size: int = 256, strict: bool = False, pad: bool = False):
+        """strict=True: YuNet must already be available (see ensure_yunet); never fall back to Haar.
+        pad=True: when the enlarged box runs past the image edge, pad by reflection so the crop stays square
+        (still photos such as FFHQ, where the face fills the frame); False keeps the video-frame behaviour."""
+        self.scale, self.size, self.pad = scale, size, pad
         self.yunet, self.haar = None, None
         try:
             if not strict:
@@ -114,12 +117,24 @@ class FaceCropper:
             print(f"YuNet unavailable ({e}); falling back to Haar cascade")
             self.haar = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
+    def _yunet_faces(self, rgb: np.ndarray):
+        """YuNet detections (N x 15, pixels of `rgb`) or None. Large images are detected on a copy downscaled to
+        DETECT_SIDE: YuNet's scores drop below its threshold for faces larger than ~500 px."""
+        h, w = rgb.shape[:2]
+        s = min(1.0, DETECT_SIDE / max(h, w))
+        small = cv2.resize(rgb, (round(w * s), round(h * s)), interpolation=cv2.INTER_AREA) if s < 1 else rgb
+        self.yunet.setInputSize((small.shape[1], small.shape[0]))
+        _, faces = self.yunet.detect(cv2.cvtColor(small, cv2.COLOR_RGB2BGR))
+        if faces is None or len(faces) == 0:
+            return None
+        faces = faces.copy()
+        faces[:, :14] /= s
+        return faces
+
     def detect(self, rgb: np.ndarray):
         """Return the largest face box (x, y, w, h) or None."""
-        h, w = rgb.shape[:2]
         if self.yunet is not None:
-            self.yunet.setInputSize((w, h))
-            _, faces = self.yunet.detect(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+            faces = self._yunet_faces(rgb)
             boxes = [] if faces is None else [f[:4] for f in faces]
         else:
             boxes = self.haar.detectMultiScale(cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY), 1.1, 5, minSize=(60, 60))
@@ -134,10 +149,8 @@ class FaceCropper:
         """
         if self.yunet is None:
             return None
-        h, w = rgb.shape[:2]
-        self.yunet.setInputSize((w, h))
-        _, faces = self.yunet.detect(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-        if faces is None or len(faces) == 0:
+        faces = self._yunet_faces(rgb)
+        if faces is None:
             return None
         f = max(faces, key=lambda r: r[2] * r[3])
         return f[:4], f[4:14].reshape(5, 2)
@@ -150,6 +163,11 @@ class FaceCropper:
         x, y, bw, bh = box
         cx, cy, side = x + bw / 2, y + bh / 2, max(bw, bh) * self.scale
         h, w = rgb.shape[:2]
+        if self.pad:
+            p = int(np.ceil(max(0, side / 2 - cx, side / 2 - cy, cx + side / 2 - w, cy + side / 2 - h)))
+            if p:
+                rgb = cv2.copyMakeBorder(rgb, p, p, p, p, cv2.BORDER_REFLECT_101)
+                cx, cy, h, w = cx + p, cy + p, h + 2 * p, w + 2 * p
         x0, y0 = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
         x1, y1 = int(min(w, cx + side / 2)), int(min(h, cy + side / 2))
         if x1 - x0 < 32 or y1 - y0 < 32:

@@ -29,14 +29,51 @@ def find_all(pattern: str, max_depth: int = 6):
     return sorted(Path(h) for h in set(hits))
 
 
+def dataset_name(manifest: Path) -> str:
+    """Dataset of a manifest.csv: its 'dataset' column (v2 extractors), else FF++ / CelebDF by method (v1)."""
+    import csv
+
+    with open(manifest, newline="") as f:
+        reader = csv.DictReader(f)
+        first = next(reader, None)
+        if first is None:
+            return None
+        if first.get("dataset"):
+            return first["dataset"]
+        methods = {first["method"]} | {row["method"] for row in reader}
+    return "CelebDF" if "CelebDF" in methods else "FF++"
+
+
 def find_datasets() -> dict:
-    """Face-crop folders attached as inputs: {'FF++': path, 'CelebDF': path} (by the methods in manifest.csv)."""
+    """Face-crop folders attached as inputs, by dataset: {'FF++': path, 'CelebDF': path, 'FFHQ': path, ...}.
+    When two attached outputs hold the same dataset, the one with more splits wins (e.g. a v2 Celeb-DF extraction
+    with train/val/test over a v1 test-only one)."""
     found = {}
     for manifest in find_all("manifest.csv"):
-        with open(manifest) as f:
-            methods = {line.split(",")[2] for line in list(f)[1:] if line.count(",") >= 5}
-        found.setdefault("CelebDF" if "CelebDF" in methods else "FF++", manifest.parent)
-    return found
+        name = dataset_name(manifest)
+        if not name:
+            continue
+        splits = len([d for d in ("train", "val", "test") if (manifest.parent / d).is_dir()])
+        if name not in found or splits > found[name][1]:
+            found[name] = (manifest.parent, splits)
+    return {name: root for name, (root, _) in sorted(found.items())}
+
+
+def find_landmarks():
+    """Folder of <dataset>.npz landmark caches from 01c, or None."""
+    hit = find(os.path.join("landmarks", "*.npz"))
+    return hit.parent if hit else None
+
+
+def find_calibration():
+    """Folder holding calibration.json from 02c, or None."""
+    hit = find("calibration.json")
+    return hit.parent if hit else None
+
+
+def find_clip_probe():
+    """probe.pt from 02b, or None."""
+    return find(os.path.join("clip", "probe.pt"))
 
 
 def checkpoint_roots() -> list:
@@ -51,12 +88,12 @@ def setup(data: bool = True, checkpoint: bool = False, data_dir: str = None):
     elif data:
         ffpp = find_datasets().get("FF++")
         if ffpp is None:
-            raise FileNotFoundError("FF++ face crops not found: add the output of 01_extract_faces as an input.")
+            raise FileNotFoundError("FF++ face crops not found: add the output of 01a_extract_ffpp as an input.")
         os.environ["DFD_DATA_DIR"] = str(ffpp)
     if checkpoint:
         ckpt = find(os.path.join("checkpoints", "best.pt"))
         if ckpt is None:
-            raise FileNotFoundError("Model not found: add the output of 02_train as an input.")
+            raise FileNotFoundError("Model not found: add the output of 02a_train_classifiers as an input.")
         os.environ["DFD_CHECKPOINT"] = str(ckpt)
     for key in ("DFD_DATA_DIR", "DFD_CHECKPOINT", "DFD_OUTPUT_DIR"):
         if key in os.environ:

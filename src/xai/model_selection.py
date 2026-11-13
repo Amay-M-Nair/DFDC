@@ -1,7 +1,9 @@
 """Pick the model for the explanation phases from phase 1 (accuracy) and phase 2 (heatmap quality) results.
 
 Criteria are fixed in advance and weighted equally (no cherry-picking):
-    accuracy        FF++ test AUC, Celeb-DF test AUC                       (higher is better)
+    accuracy        FF++, Celeb-DF and DFDC test AUC (whichever were run)  (higher is better)
+    false alarms    v2: share of real photos (FFHQ / CelebA-HQ test) called FAKE by the calibrated
+                    three-way verdict                                       (lower is better)
     faithfulness    Grad-CAM++ gain over a random map, per dataset:
                         deletion gain  = random AUC - Grad-CAM++ AUC       (higher is better)
                         insertion gain = Grad-CAM++ AUC - random AUC       (higher is better)
@@ -20,6 +22,14 @@ import pandas as pd
 
 from src.classifier.model import BASELINES
 from src.xai.gradcam import BACKGROUND
+
+AUC_SETS = ("FF++", "CelebDF", "DFDC")   # DFDC: the v2 cross-dataset test
+REAL_SETS = ("FFHQ", "CelebAHQ")         # v2 real-photo test sets (false FAKE rate)
+
+
+def cross_set(columns) -> str:
+    """The generalisation test: DFDC when it was run, else Celeb-DF (v1)."""
+    return next((d for d in ("DFDC", "CelebDF") if f"{d}_auc" in columns or f"{d} AUC" in columns), None)
 
 # Fixed categorical order: colour follows the model, never its rank
 PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
@@ -85,7 +95,7 @@ def accuracy_table(summary):
     s = summary.copy()
     if "backbone" in s:  # same display names as notebook 04's files, even if labels were edited in between
         s["model"] = s.backbone.map(lambda b: BASELINES.get(b, b))
-    for ds in ("FF++", "CelebDF"):
+    for ds in AUC_SETS:
         ci = s.get(f"{ds}_auc_ci")
         if ci is not None:
             lo_hi = ci.str.strip("[]").str.split(",", expand=True).astype(float)
@@ -97,9 +107,12 @@ def scorecard(gains, focus, acc):
     card = pd.DataFrame(index=sorted(gains.model.unique()))
     if acc is not None:
         a = acc.set_index("model")
-        for ds in ("FF++", "CelebDF"):
+        for ds in AUC_SETS:
             if f"{ds}_auc" in a:
                 card[f"{ds} AUC"] = a[f"{ds}_auc"]
+        fpr = [f"{ds}_fpr_3way" for ds in REAL_SETS if f"{ds}_fpr_3way" in a]
+        if fpr:
+            card["real-photo false FAKE"] = a[fpr].mean(axis=1)
         card["GFLOPs"] = a["gflops"]
     for (ds, metric), g in gains.groupby(["dataset", "metric"]):
         card[f"{ds} {metric} gain"] = g.set_index("model").gain
@@ -108,14 +121,15 @@ def scorecard(gains, focus, acc):
     card["face focus"] = focus.groupby("model").face_share.mean()
     ranked = card.drop(columns=["significant vs random"])
     ranks = ranked.rank(ascending=False, method="min")
-    if "GFLOPs" in ranks:
-        ranks["GFLOPs"] = ranked["GFLOPs"].rank(ascending=True, method="min")
+    for lower_is_better in ("GFLOPs", "real-photo false FAKE"):
+        if lower_is_better in ranks:
+            ranks[lower_is_better] = ranked[lower_is_better].rank(ascending=True, method="min")
     card["mean rank"] = ranks.mean(axis=1)
     return card.sort_values("mean rank"), ranks
 
 
 def plot_accuracy(acc, colors, order):
-    dss = [d for d in ("FF++", "CelebDF") if f"{d}_auc" in acc]
+    dss = [d for d in AUC_SETS if f"{d}_auc" in acc]
     fig, axes = plt.subplots(1, len(dss), figsize=(6 * len(dss), 0.45 * len(order) + 1.4))
     for ax, ds in zip(np.atleast_1d(axes), dss):
         a = acc.set_index("model").reindex([m for m in order if m in set(acc.model)])
@@ -135,7 +149,7 @@ def plot_accuracy(acc, colors, order):
 
 
 def plot_gains(gains, colors, order):
-    panels = [(ds, m) for ds in ("FF++", "CelebDF") for m in ("deletion", "insertion")
+    panels = [(ds, m) for ds in AUC_SETS for m in ("deletion", "insertion")
               if len(gains[(gains.dataset == ds) & (gains.metric == m)])]
     fig, axes = plt.subplots(1, len(panels), figsize=(4.2 * len(panels), 0.45 * len(order) + 1.6), sharey=True)
     for ax, (ds, metric) in zip(np.atleast_1d(axes), panels):
@@ -161,7 +175,8 @@ def plot_gains(gains, colors, order):
 
 
 def plot_tradeoff(card, colors):
-    if "CelebDF AUC" not in card:
+    cross = cross_set(card.columns)
+    if cross is None:
         return None
     gain_cols = [c for c in card.columns if c.endswith("gain")]
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.6))
@@ -170,11 +185,11 @@ def plot_tradeoff(card, colors):
         yvals = card[gain_cols].mean(axis=1) if ycol == "faithfulness" else card["face focus"]
         for m, r in card.iterrows():
             size = 40 + 18 * r.get("GFLOPs", 1)
-            ax.scatter(r["CelebDF AUC"], yvals[m], s=size, color=colors[m], edgecolor="white", linewidth=2, zorder=3)
-            ax.annotate(short(m), (r["CelebDF AUC"], yvals[m]), xytext=(7, 4), textcoords="offset points",
+            ax.scatter(r[f"{cross} AUC"], yvals[m], s=size, color=colors[m], edgecolor="white", linewidth=2, zorder=3)
+            ax.annotate(short(m), (r[f"{cross} AUC"], yvals[m]), xytext=(7, 4), textcoords="offset points",
                         fontsize=8, color="#3a3a37")
         ax.margins(x=0.18, y=0.12)
-        ax.set_xlabel("Celeb-DF test AUC (generalisation)", fontsize=9)
+        ax.set_xlabel(f"{cross} test AUC (generalisation)", fontsize=9)
         ax.set_ylabel(ylabel, fontsize=9)
         ax.grid(**GRID); ax.set_axisbelow(True)
         for s in ("top", "right"):

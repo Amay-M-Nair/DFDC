@@ -33,4 +33,10 @@ STD = (0.229, 0.224, 0.225)
 # Label convention: 0 = real, 1 = fake (model outputs a single "fake" logit)
 CLASSES = ("real", "fake")
 
+# v2 datasets (names used in manifests, landmark files and --data NAME=root arguments)
+VIDEO_DATASETS = ("FF++", "CelebDF")          # train/val/test, real + fake
+REAL_PHOTO_DATASETS = ("FFHQ", "CelebAHQ")    # real only; self-blended into fakes during training
+SYNTHETIC = ("StyleGAN", "Diffusion")         # fully generated faces; train the CLIP probe
+CROSS_DATASET = "DFDC"                        # test only: never trained, early-stopped or calibrated on
+
 # LLM backend for explanations: see src/explain/providers.py (LLM_PROVIDER, LLM_MODEL, ...)
