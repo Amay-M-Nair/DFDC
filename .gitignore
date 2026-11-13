@@ -6,6 +6,7 @@ data/*
 !data/.gitkeep
 outputs/*
 !outputs/.gitkeep
+examples/
 .ipynb_checkpoints/
 .claude/
 notebooks/

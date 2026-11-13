@@ -172,7 +172,9 @@ class ForensicExplainer:
     def build_prompt(self, exp, grounded: bool):
         """(system prompt, user message, retrieved cards) for one Explanation."""
         system = self.system
-        user = f"Evidence summary:\n{exp.describe(self.summary_regions, prominent=self.multi_region)}"
+        desc = (exp.describe(self.summary_regions, prominent=True) if self.multi_region
+                else exp.describe(self.summary_regions))
+        user = f"Evidence summary:\n{desc}"
         docs = []
         if grounded:
             docs = self.retriever.retrieve(exp)
