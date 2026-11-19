@@ -24,6 +24,9 @@ from src.xai.gradcam import confidence_level
 MODELS = {"openai/gpt-oss-120b": "GPT-OSS-120B", "openai/gpt-oss-20b": "GPT-OSS-20B",
           "qwen/qwen3.8-27b": "Qwen3.8-27B (slower)"}
 MAX_TOKENS = {"qwen/qwen3.8-27b": 1000}   # Groq caps Qwen at 1K output tokens per minute
+# Qwen's hidden reasoning counts against that 1K: at effort "low" it used all of it on the demo's multi-region
+# prompt and returned no answer, so Qwen answers without reasoning here (GPT-OSS keeps "low").
+REASONING = {"qwen/qwen3.8-27b": "none"}
 STEPS = ("Detect", "Heatmap", "Retrieve", "Explain", "Check")
 SUMMARY_REGIONS = None                     # the LLM reads every region (phases 3-5 list only the top 3)
 ATOMIC = True                              # atomic regions: teeth, hairline, jawline, ... (phases 2-5: the combined 9)
@@ -157,7 +160,7 @@ class DemoPipeline:
     def llm(self, model: str, min_interval: float = 0) -> ForensicExplainer:
         """A Groq client for `model` (built once; the provider reads its settings when the client is built)."""
         if model not in self._llms:
-            os.environ.update(LLM_PROVIDER="groq", LLM_MODEL=model, LLM_REASONING_EFFORT="low",
+            os.environ.update(LLM_PROVIDER="groq", LLM_MODEL=model, LLM_REASONING_EFFORT=REASONING.get(model, "low"),
                               LLM_MIN_INTERVAL=str(min_interval))
             if model in MAX_TOKENS:
                 os.environ["LLM_MAX_TOKENS"] = str(MAX_TOKENS[model])

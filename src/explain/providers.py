@@ -116,4 +116,8 @@ class ChatClient:
         resp = self._client.chat.completions.create(
             model=self.model, max_tokens=max_tokens, temperature=0,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], **kwargs)
-        return resp.choices[0].message.content or ""
+        choice = resp.choices[0]
+        if not choice.message.content and choice.finish_reason == "length":
+            raise ValueError(f"the {max_tokens}-token output limit was used up before any answer "
+                             f"(reasoning effort {self.reasoning_effort or 'default'})")
+        return choice.message.content or ""
