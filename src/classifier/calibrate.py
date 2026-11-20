@@ -13,6 +13,13 @@ CNN thresholds use the datasets the CNN was trained for (not StyleGAN/diffusion)
 every validation dataset.
 
     python -m src.classifier.calibrate --roots outputs/checkpoints --clip outputs/clip --out outputs/calibration
+
+--bake folds the calibration into one checkpoint instead, for code that reads P(fake) and model.threshold
+(the demo, Grad-CAM, the LLM stages): the head's weight and bias are divided by the fitted temperature, so the
+model itself outputs logit / T, and the stored threshold becomes the calibrated two-way one. It reads the
+val_preds.npz that train.py saved next to the checkpoint and writes best_calibrated.pt beside it.
+
+    python -m src.classifier.calibrate --bake outputs/checkpoints/ft/best.pt [--bake-threshold youden|fpr]
 """
 import argparse
 import json
@@ -139,16 +146,51 @@ def calibrate_scores(logits, labels, names, max_fpr, max_fnr, exclude=()):
             "val_rates": rates(p_cal, labels[m], t_real, t_fake)}
 
 
+def bake(ckpt_path: Path, how: str = "youden", max_fpr: float = 0.05, max_fnr: float = 0.10) -> Path:
+    """Write <ckpt dir>/best_calibrated.pt: temperature folded into the head, calibrated two-way threshold.
+    how: 'youden' (best balanced accuracy) or 'fpr' (t_fake: at most max_fpr of validation reals called FAKE)."""
+    ckpt_path = Path(ckpt_path)
+    z = np.load(ckpt_path.parent / "val_preds.npz")
+    logits, labels, names = z["logits"], z["labels"], z["datasets"]
+    entry = calibrate_scores(logits, labels, names, max_fpr, max_fnr, exclude=SYNTHETIC)
+    t = entry["temperature"]
+    m = ~np.isin(names, SYNTHETIC)
+    p, y = sigmoid(logits[m] / t), labels[m]
+    print(f"temperature T={t:.3f}  ECE {entry['ece_raw']:.3f} -> {entry['ece_calibrated']:.3f}  ({m.sum()} val images)")
+    options = {"youden": entry["youden"], "fpr": entry["t_fake"]}
+    for name, thr in options.items():
+        print(f"  {name:6} threshold {thr:.3f}: reals called FAKE {(p[y == 0] >= thr).mean():.1%}, "
+              f"fakes called REAL {(p[y == 1] < thr).mean():.1%}")
+
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    state = ckpt["model"]
+    for k in ("head.1.weight", "head.1.bias"):
+        state[k] = state[k] / t
+    ckpt.update(threshold=float(options[how]), raw_threshold=ckpt.get("threshold"), temperature=float(t),
+                calibrated=True, threshold_rule=how, calibration=entry)
+    out = ckpt_path.parent / "best_calibrated.pt"
+    torch.save(ckpt, out)
+    print(f"saved {out} (threshold {options[how]:.3f}, rule '{how}')")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--roots", nargs="+", required=True, help="folders searched for val_preds.npz (02a outputs)")
+    ap.add_argument("--roots", nargs="+", default=None, help="folders searched for val_preds.npz (02a outputs)")
     ap.add_argument("--clip", type=Path, default=None, help="02b output folder (val_preds.npz, probe.pt)")
-    ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--bake", type=Path, default=None, help="checkpoint to fold the calibration into (see above)")
+    ap.add_argument("--bake-threshold", choices=["youden", "fpr"], default="youden")
     ap.add_argument("--max-fpr", type=float, default=0.05, help="share of real faces allowed above t_fake")
     ap.add_argument("--max-fnr", type=float, default=0.10, help="share of fakes allowed below t_real")
     ap.add_argument("--ood-quantile", type=float, default=0.99)
     ap.add_argument("--min-fusion", type=int, default=100, help="validation images shared with CLIP needed to fuse")
     args = ap.parse_args()
+    if args.bake:
+        bake(args.bake, args.bake_threshold, args.max_fpr, args.max_fnr)
+        return
+    if not args.roots or not args.out:
+        ap.error("--roots and --out are required (or use --bake CKPT)")
     args.out.mkdir(parents=True, exist_ok=True)
 
     clip = None

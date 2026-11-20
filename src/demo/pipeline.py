@@ -21,6 +21,10 @@ from src.explain.corpus import cards_by_id
 from src.explain.llm import ForensicExplainer, LLMExplanation
 from src.xai.gradcam import confidence_level
 
+# Detectors the demo can switch between (only those whose checkpoint exists are offered). "ft" is v1 fine-tuned on
+# FF++ + a Celeb-DF identity split with its calibration baked in (kaggle/02d_finetune_b0, calibrate.py --bake).
+DETECTORS = {"v1": ("EfficientNet-B0 · FF++ (v1)", CHECKPOINT),
+             "ft": ("EfficientNet-B0 · FF++ + Celeb-DF, calibrated", CHECKPOINT.parent / "ft" / "best_calibrated.pt")}
 MODELS = {"openai/gpt-oss-120b": "GPT-OSS-120B", "openai/gpt-oss-20b": "GPT-OSS-20B",
           "qwen/qwen3.8-27b": "Qwen3.8-27B (slower)"}
 MAX_TOKENS = {"qwen/qwen3.8-27b": 1000}   # Groq caps Qwen at 1K output tokens per minute
@@ -133,9 +137,11 @@ def check_answer(out: LLMExplanation, exp) -> dict:
 
 
 class DemoPipeline:
-    def __init__(self, checkpoint=CHECKPOINT):
+    def __init__(self, checkpoint=CHECKPOINT, shared: "DemoPipeline" = None):
+        """shared: another pipeline whose retriever and LLM clients this one reuses (a second detector)."""
         self.checkpoint = Path(checkpoint)
         self._explainer, self._retriever, self._llms = None, None, {}
+        self._shared = shared
 
     @property
     def ready(self) -> bool:
@@ -151,6 +157,8 @@ class DemoPipeline:
 
     @property
     def retriever(self):
+        if self._shared is not None:
+            return self._shared.retriever
         if self._retriever is None:
             from src.explain.retriever import Retriever
 
@@ -159,6 +167,8 @@ class DemoPipeline:
 
     def llm(self, model: str, min_interval: float = 0) -> ForensicExplainer:
         """A Groq client for `model` (built once; the provider reads its settings when the client is built)."""
+        if self._shared is not None:
+            return self._shared.llm(model, min_interval)
         if model not in self._llms:
             os.environ.update(LLM_PROVIDER="groq", LLM_MODEL=model, LLM_REASONING_EFFORT=REASONING.get(model, "low"),
                               LLM_MIN_INTERVAL=str(min_interval))

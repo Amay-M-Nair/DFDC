@@ -9,6 +9,9 @@ every real crop with cached landmarks, and the same quality degradation for real
         --data StyleGAN=data_hq/stylegan --data Diffusion=data_hq/diffusion --landmarks landmarks
     python -m src.classifier.train --epochs 8 --backbone legacy_xception ...   # baseline -> checkpoints/legacy_xception/
     python -m src.classifier.train --epochs 1 --subset 500 ...                 # smoke test
+    python -m src.classifier.train --init outputs/checkpoints/best.pt --out outputs/checkpoints/ft/best.pt         --epochs 2 --lr 5e-5 --samples-per-epoch 20000 --no-sbi --data FF++=data
+        # quick fix for a v1 model: fine-tune it under the shared blur/JPEG/resize degradation, so image
+        # quality stops predicting the label, without overwriting the original checkpoint
 
 Validation pools every dataset's val split (at most --val-max-per-set images each): early stopping uses the AUC
 over the non-synthetic datasets. After training, the best checkpoint scores the whole validation list and saves
@@ -20,6 +23,7 @@ import argparse
 import json
 import random
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -92,8 +96,13 @@ def main():
     ap.add_argument("--weight-decay", type=float, default=0.05)
     ap.add_argument("--train-feats", type=int, default=5000, help="training images sampled for OOD statistics")
     ap.add_argument("--backbone", default=DEFAULT_BACKBONE, help="timm model name or 'meso4'")
+    ap.add_argument("--init", default=None, help="checkpoint to start from (fine-tuning); sets --backbone from it")
+    ap.add_argument("--out", default=None, help="where to save the best checkpoint (default: by backbone)")
     args = ap.parse_args()
-    ckpt_path = checkpoint_path(args.backbone)
+    init = torch.load(args.init, map_location="cpu", weights_only=False) if args.init else None
+    if init:
+        args.backbone = init.get("backbone", DEFAULT_BACKBONE)
+    ckpt_path = Path(args.out) if args.out else checkpoint_path(args.backbone)
     torch.manual_seed(0); random.seed(0); np.random.seed(0)
 
     roots = parse_roots(args.data or [f"FF++={DATA_DIR}"])
@@ -112,7 +121,11 @@ def main():
     train_dl = mixed_loader(train_set, per_epoch, args.batch_size, args.workers)
     val_dl = list_loader(val_items, args.batch_size * 2, args.workers)
 
-    model = DeepfakeClassifier(args.backbone).to(device)
+    model = DeepfakeClassifier(args.backbone, pretrained=init is None)
+    if init:
+        model.load_state_dict(init["model"])
+        print(f"fine-tuning from {args.init} (epoch {init.get('epoch')}, val AUC {init.get('val_auc', 0):.4f})")
+    model = model.to(device)
     if not model.is_vit:
         model = model.to(memory_format=torch.channels_last)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -151,7 +164,8 @@ def main():
         if auc > best_auc:
             best_auc, bad_epochs = auc, 0
             torch.save({"model": model.state_dict(), "backbone": args.backbone, "epoch": epoch, "val_auc": auc,
-                        "threshold": thr, "version": 2, "datasets": sorted(roots), "train_args": vars(args)},
+                        "threshold": thr, "version": 2, "datasets": sorted(roots), "train_args": vars(args),
+                        "init": args.init},
                        ckpt_path)
             print(f"  saved best -> {ckpt_path}")
         else:

@@ -7,16 +7,18 @@ Two pages:
                     `python -m src.demo.pipeline` or notebook 08); works without internet or an API key and
                     reveals each image's real label.
 
-    python app.py [--checkpoint path/to/best.pt] [--share]     # then open http://localhost:7860
+    python app.py [--checkpoint path/to/best.pt] [--checkpoint-ft path/to/best_calibrated.pt] [--share]
+    # then open http://localhost:7860; with both checkpoints present the Live page offers a Detector choice
 """
 import argparse
 import os
+from pathlib import Path
 
 import gradio as gr
 
 from src.config import CHECKPOINT
 from src.demo import render
-from src.demo.pipeline import GALLERY_DIR, MODELS, DemoPipeline, gallery_result, load_gallery
+from src.demo.pipeline import DETECTORS, GALLERY_DIR, MODELS, DemoPipeline, gallery_result, load_gallery
 
 
 LIVE_PROMPT = "Upload a face image or a video frame and press Analyse."
@@ -50,10 +52,12 @@ def panels(prompt: str):
     return [verdict, face, overlay, regions, heat, summary, expl, cards]
 
 
-def build(pipe: DemoPipeline, gallery: list):
-    def run_live(image, model):
+def build(pipes: dict, gallery: list):
+    """pipes: {detector key: DemoPipeline}, the first one the default."""
+    def run_live(image, model, detector):
         if image is None:
             raise gr.Error("Upload a face image or a video frame first.")
+        pipe = pipes.get(detector) or next(iter(pipes.values()))
         if not pipe.ready:
             raise gr.Error(f"No detector checkpoint at {pipe.checkpoint}: copy EfficientNet-B0's best.pt there "
                            f"or start with --checkpoint. The Gallery page works without it.")
@@ -81,18 +85,21 @@ def build(pipe: DemoPipeline, gallery: list):
                                          height=300)
                         model = gr.Dropdown([(label, m) for m, label in MODELS.items()], value=next(iter(MODELS)),
                                             label="Explanation model (Groq)")
+                        detector = gr.Dropdown([(DETECTORS[k][0] if k in DETECTORS else k, k) for k in pipes],
+                                               value=next(iter(pipes)), label="Detector", visible=len(pipes) > 1)
                         go = gr.Button("Analyse", variant="primary", size="lg")
                         steps = gr.HTML(render.progress())
                     with gr.Column(scale=8):
                         live = panels(LIVE_PROMPT)
-                go.click(run_live, [image, model], [steps, *live], show_progress="hidden")
+                go.click(run_live, [image, model, detector], [steps, *live], show_progress="hidden")
             with gr.Tab("Gallery · offline"):
                 if not gallery:
                     gr.HTML(render.banner(f"No gallery yet: build it with notebook 08 or "
                                           f"<code>python -m src.demo.pipeline</code> (saved to {GALLERY_DIR})."))
                 else:
                     gr.HTML(render.banner("Test images analysed in advance by every model: no internet or API key "
-                                          "needed. Pick one; its real label is shown with the result."))
+                                          "needed. Pick one; its real label is shown with the result."
+                                          + (" Analysed with the v1 detector." if len(pipes) > 1 else "")))
                 with gr.Row(equal_height=False):
                     with gr.Column(scale=4, min_width=300):
                         thumbs = [(str(GALLERY_DIR / f"{e['key']}_face.png"), f"{e['truth']['dataset']} · {i + 1}")
@@ -123,10 +130,15 @@ THEME = gr.themes.Soft(primary_hue="blue", neutral_hue="slate",
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", default=str(CHECKPOINT), help="EfficientNet-B0 best.pt")
+    ap.add_argument("--checkpoint", default=str(CHECKPOINT), help="EfficientNet-B0 best.pt (v1, the default detector)")
+    ap.add_argument("--checkpoint-ft", default=str(DETECTORS["ft"][1]),
+                    help="fine-tuned, calibrated detector (offered when the file exists)")
     ap.add_argument("--share", action="store_true", help="public gradio.live link (needed on Kaggle/Colab)")
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 7860)))
     args = ap.parse_args()
-    build(DemoPipeline(args.checkpoint), load_gallery()).launch(
+    pipes = {"v1": DemoPipeline(args.checkpoint)}
+    if Path(args.checkpoint_ft).exists():
+        pipes["ft"] = DemoPipeline(args.checkpoint_ft, shared=pipes["v1"])
+    build(pipes, load_gallery()).launch(
         server_name="127.0.0.1", server_port=args.port, share=args.share, theme=THEME, css=render.CSS,
         allowed_paths=[str(GALLERY_DIR)])

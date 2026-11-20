@@ -122,6 +122,23 @@ python -m src.classifier.compare --roots outputs/checkpoints --datasets FF++=dat
 The explanation stages (phases 2–6) still read the two-way verdict from the checkpoint's `threshold` (Youden J on
 the pooled validation set). Moving them to the three-way verdict is the next step.
 
+### Quick fix before v2: fine-tuned, calibrated v1 (`neo` branch)
+`kaggle/02d_finetune_b0` fine-tunes the v1 EfficientNet-B0 for about 15 min on FF++ plus the Celeb-DF crops, under
+the same blur/JPEG/resize degradation for real and fake images, then folds a validation-fitted temperature into the
+model's last layer (`calibrate.py --bake`) and stores the calibrated two-way threshold. The demo, Grad-CAM and the
+LLM stages read it like any other checkpoint; `app.py` offers it in a Detector menu when
+`outputs/checkpoints/ft/best_calibrated.pt` exists (v1 stays the default and the Gallery stays v1).
+
+- Celeb-DF only has its official test list extracted, so `split_crops.py` splits those crops by identity into
+  train/val/test (60/15/25). A score on that test part is in-domain and isn't comparable with v1's cross-dataset
+  Celeb-DF number; the phase 3–6 results are all v1.
+
+```bash
+python -m src.classifier.split_crops --src data_celebdf --out data_celebdf_split
+python -m src.classifier.train --init outputs/checkpoints/best.pt --out outputs/checkpoints/ft/best.pt     --epochs 3 --lr 5e-5 --samples-per-epoch 20000 --no-sbi --data FF++=data --data CelebDF=data_celebdf_split
+python -m src.classifier.calibrate --bake outputs/checkpoints/ft/best.pt     # -> ft/best_calibrated.pt
+```
+
 ## Explain one image
 ```bash
 python -m src.xai.gradcam --image path/to/face.jpg     # default: outputs/checkpoints/best.pt (EfficientNet-B0)
