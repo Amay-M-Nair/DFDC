@@ -1,16 +1,34 @@
-# Explainable Deepfake Detector
+# Retrieval-Grounded and Checkable Explanations for Deepfake Detection
 
-Real/fake face classifier with visual and natural-language explanations, plus a measurable check on whether
-those explanations are grounded or hallucinated.
+Code for the paper *Retrieval-Grounded and Checkable Explanations for Deepfake Detection* (Abhishek Singh,
+Himanshu Khalatkar, Amay M Nair, Samraddh Pratap Singh; School of Computer Science and Engineering, VIT-AP
+University; capstone project CAP4001).
+
+The pipeline keeps detection and explanation apart. A **frozen image classifier** decides whether a face crop is
+real or fake, and **Grad-CAM++** localises its evidence over nine facial regions. A **text-only LLM**, which never
+sees the pixels, then explains that verdict from a templated evidence summary and must answer in fixed JSON with
+region and artefact labels drawn from closed sets, so every claim can be checked automatically. In the
+**grounded** condition, short forensic evidence cards picked by a hybrid retriever must be cited; in the
+**verified** condition, a verifier (rule checks + sentence-level NLI) returns any failing answer for one revision.
+No metric uses an LLM judge.
+
+**Main findings (paper).**
+- Seven backbones trained on FaceForensics++ (FF++): six reach 0.977–0.991 frame-level AUC on FF++ test but only
+  0.756–0.798 on unseen Celeb-DF v2 test, and the two datasets rank them differently.
+- On a 48-image development set, grounding raised the share of evidence-supported sentences from 0.29 / 0.14 / 0.13
+  to 0.47 / 0.35 / 0.45 (GPT-OSS-120B / GPT-OSS-20B / Qwen3.8-27B; Holm-corrected p ≤ 0.003 for each), left no
+  sentence contradicted, and removed Qwen's unfounded GAN-fingerprint claims (27% → 0%).
+- The development set was also used for tuning, so these explanation results are preliminary; the held-out test
+  (phase 5, 96 fresh images) follows.
 
 | Phase | What | Where |
 |---|---|---|
-| 1 | EfficientNet-B0 classifier vs. 6 baselines; trained on FF++, tested on FF++ and Celeb-DF | `src/classifier/` |
-| 2 | Grad-CAM++ localisation + facial-region attribution | `src/xai/gradcam.py` |
-| 3 | Ungrounded LLM explanation (GPT-OSS-120B/20B and Qwen3.8-27B on Groq's free tier; other providers also work) | `src/explain/llm.py`, `src/explain/providers.py` |
-| 4 | RAG-grounded explanation: evidence cards, hybrid retrieval, cited answers, verifier | `corpus/`, `src/explain/retriever.py`, `src/eval/verify.py` |
+| 1 | Seven detector backbones trained on FF++, tested on FF++ and Celeb-DF v2; EfficientNet-B0 is the detector whose verdicts are explained. | `src/classifier/` |
+| 2 | Grad-CAM++ localisation + attribution over nine facial regions | `src/xai/gradcam.py` |
+| 3 | Ungrounded LLM explanation (GPT-OSS-120B/20B and Qwen3.8-27B on Groq; other providers also work) | `src/explain/llm.py`, `src/explain/providers.py` |
+| 4 | Grounded explanation: 35 evidence cards, hybrid retrieval, cited answers, verifier | `corpus/`, `src/explain/retriever.py`, `src/eval/verify.py` |
 | 5 | Held-out evaluation: ungrounded vs. grounded vs. verified, paired tests, no-LLM baselines | `src/eval/experiment.py`, `src/eval/stats.py` |
-| 6 | Demo for the exhibition (Gradio): live analysis + offline gallery | `app.py`, `src/demo/` |
+| 6 | Interactive demo (Gradio): live analysis + offline gallery (not evaluated in the paper) | `app.py`, `src/demo/` |
 
 ## Setup
 ```bash
@@ -28,8 +46,8 @@ python -m src.classifier.ff_extract --src path/to/FaceForensics++ --frames 10
 - Works with the official layout (`original_sequences/`, `manipulated_sequences/<method>/c23/videos`) and flattened mirrors (`original/`, `Deepfakes/`, ...).
 - Methods: Deepfakes, Face2Face, FaceSwap, NeuralTextures, FaceShifter (whichever are present). The separate DeepFakeDetection/actors subset is skipped.
 - `--compression c23` (default) picks one quality level when several are present.
-- **Split by identity, not by frame**, so no face appears in both train and test. Use `--splits <dir>` with the official `train/val/test.json` to reproduce the paper split.
-- Real videos get more frames than each fake video to balance the classes. `--max-videos N` limits videos per method for quick runs.
+- **Split by identity, not by frame**, so no face appears in two splits. A manipulated video such as `000_003` links identities 000 and 003; every connected group of identities goes to exactly one split, and the groups are divided 72/14/14 into train/val/test (the split used in our paper). `--splits <dir>` with the official FF++ `train/val/test.json` uses the original FF++ authors' split instead.
+- Real videos get more frames than each fake video to balance the classes (10 per manipulated video, 50 per real video, i.e. 10 per method). The resulting test split has 140 real and about 700 manipulated videos, 13,988 frames. `--max-videos N` limits videos per method for quick runs.
 - Faces are detected with OpenCV YuNet (auto-downloaded; falls back to a Haar cascade) and cropped square at 1.3x the face box.
 
 Any other dataset already in `data/{train,val,test}/{real,fake}` image folders also works (e.g. `python -m src.classifier.prepare_data` for 140k Real and Fake Faces).
@@ -42,13 +60,22 @@ python -m src.classifier.evaluate                          # outputs/metrics/ (+
 ```
 
 ### Model comparison and cross-dataset test
-Protocol: **train on FaceForensics++**, test on the FF++ test split (in-dataset) and on the **Celeb-DF v2 official
-test split** (cross-dataset, never seen in training). All models share the same data, 224px input, augmentation,
-schedule and early stopping; each model's decision threshold is tuned on FF++ validation only.
+Protocol: **train on FaceForensics++ (c23)**, test on the FF++ test split (in-domain) and on the **Celeb-DF v2
+official test list** (518 videos, up to 32 frames each, 16,575 frames; cross-dataset, never used for training, model
+selection or threshold tuning). All models share the same data, 224px input, augmentation, schedule and early
+stopping:
+- ImageNet-pretrained `timm` backbone without its classifier, then dropout (p = 0.3) and one linear "fake" logit;
+  MesoNet-4 is trained from scratch. Binary cross-entropy.
+- AdamW (weight decay 0.05), batch 32, one-cycle schedule with 10% warm-up, at most 8 epochs, early stopping after
+  3 epochs without a rise in validation AUC. Learning rate 3e-4 (1e-3 for MesoNet-4, 1e-4 for ViT-S/16 and
+  ConvNeXt-T).
+- Augmentation: random resized crop (scale 0.8–1.0), horizontal flip, colour jitter, random JPEG (p = 0.5,
+  quality 40–95), random erasing (p = 0.3).
+- The decision threshold τ maximises Youden's J on FF++ validation and is never re-tuned on test data.
 
 | `--backbone` | Model |
 |---|---|
-| `efficientnet_b0` | EfficientNet-B0 (proposed) |
+| `efficientnet_b0` | EfficientNet-B0 (the detector whose verdicts are explained) |
 | `meso4` | MesoNet-4 (Afchar et al. 2018), trained from scratch |
 | `legacy_xception` | Xception (FaceForensics++ baseline) |
 | `resnet50` | ResNet-50 |
@@ -65,14 +92,44 @@ python -m src.classifier.compare --roots outputs/checkpoints --datasets FF++=dat
 per-method AUC, params/GFLOPs/throughput/training time, paired significance tests for every pair of models, and figures
 (ROC, accuracy vs. compute, in-dataset vs. cross-dataset AUC).
 
+### Detector results (paper, v1)
+Single T4, about 6.2 GPU-hours for all seven models. Frame-level AUC with 95% intervals from a class-stratified
+cluster bootstrap over videos (1,000 resamples); the 21 pairwise tests per dataset are not corrected for
+multiplicity.
+
+| Model | Params (M) | GFLOPs | Img/s (T4) | FF++ AUC | Acc. (%) | F1 | FF++ video AUC | Celeb-DF AUC | Rank FF++ → CDF |
+|---|---|---|---|---|---|---|---|---|---|
+| ConvNeXt-T | 27.8 | 8.91 | 642 | **0.9914** | 96.03 | 0.9596 | 0.9955 | 0.7787 | 1 → 2 |
+| Xception | 20.8 | 9.10 | 542 | 0.9879 | 95.07 | 0.9496 | 0.9934 | 0.7597 | 2 → 5 |
+| EfficientNet-B0 | 4.0 | 0.77 | 1,623 | 0.9845 | 94.14 | 0.9397 | 0.9919 | 0.7618 | 3 → 4 |
+| ResNet-50 | 23.5 | 8.17 | 799 | 0.9789 | 93.17 | 0.9304 | 0.9890 | 0.7636 | 4 → 3 |
+| ViT-S/16 | 21.7 | 9.20 | 1,014 | 0.9774 | 91.98 | 0.9159 | 0.9841 | **0.7978** | 5 → 1 |
+| EfficientNet-B4 | 17.6 | 3.00 | 576 | 0.9766 | 92.67 | 0.9252 | 0.9879 | 0.7560 | 6 → 6 |
+| MesoNet-4 | < 0.1 | 0.09 | 7,494 | 0.7537 | 68.38 | 0.6956 | 0.7814 | 0.6309 | 7 → 7 |
+
+- **In-domain:** ConvNeXt-T leads on FF++ and on all five methods; its lead is significant but small (+0.0035 AUC
+  over Xception, p = 0.018). NeuralTextures is the hardest method for every model.
+- **Cross-dataset:** modern backbones lose 0.180–0.228 AUC on Celeb-DF and are reordered (ViT-S/16 5th → 1st).
+  With intervals of about ±0.03, most Celeb-DF differences are not significant; in-domain AUC did not predict
+  cross-dataset AUC.
+- **Thresholds transfer worse than rankings:** at ConvNeXt-T's FF++ threshold (τ = 0.93), false alarms rise from
+  2.4% (FF++) to 34.0% (Celeb-DF) and missed fakes from 5.6% to 25.4%. Averaging per video lifts Celeb-DF AUC by
+  0.05–0.08 (ConvNeXt-T 0.779 → 0.851).
+- **Why EfficientNet-B0 is explained:** 99.3% of ConvNeXt-T's FF++ AUC with 4.0 M parameters, 0.77 GFLOPs and
+  2.5× the throughput, no significant Celeb-DF difference (p = 0.174), and a convolutional last stage for
+  Grad-CAM++.
+
 ## Explain one image
 ```bash
 python -m src.xai.gradcam --image path/to/face.jpg     # default: outputs/checkpoints/best.pt (EfficientNet-B0)
 ```
-Facial regions (eyes, nose, mouth, cheeks, forehead, chin) are placed from YuNet's 5 landmarks on each face (the
-demo uses finer regions; see Demo).
-Regions are ranked by **concentration** (mean heat inside the region relative to the image mean), so large
-regions such as the background or forehead don't come first just for their size; `rank_by="share"` ranks by
+Grad-CAM++ is computed for the predicted class (the FAKE logit, negated for REAL) at the last convolutional layer
+(`conv_head` in EfficientNet-B0). Nine facial regions — left eye, right eye, nose, mouth/teeth, left cheek, right
+cheek, forehead/hairline, chin/jawline and background/face boundary — are placed from YuNet's 5 landmarks (a fixed
+grid as fallback); a pixel in two boxes belongs to the region listed first, and pixels outside all eight face boxes
+form the background (the demo uses finer regions; see Demo).
+Regions are ranked by **concentration** (mean heat inside the region divided by the mean heat of the crop), so
+large regions don't come first just for their size, and the top three are passed on; `rank_by="share"` ranks by
 share of total heat instead.
 
 ### Heatmap evaluation (all models)
@@ -115,8 +172,11 @@ same answers; Anthropic uses the API default, so its answers can vary between ru
 The LLM never sees the image. It receives only an **evidence summary** filled from a fixed template: the
 verdict, P(fake), the decision threshold, a confidence level (high / moderate / borderline, by how far the score is
 past the threshold) and the top-3 regions with their concentration and share of heat. It must answer in a fixed
-JSON schema: a `claimed_region` and an `artifact_type` from fixed lists (the region set and the corpus taxonomy),
-plus 2–4 plain sentences. For a REAL verdict the artifact is `none` and the explanation says which regions the
+JSON schema: a `claimed_region` from the nine regions, an `artifact_type` from nine artefact labels or `none`, 2–4
+plain sentences and a citation list. Confidence uses the margin m = (s − τ)/(1 − τ) above the threshold or
+(τ − s)/τ below it, with s = P(fake): high for m ≥ 0.5, moderate for 0.15 ≤ m < 0.5, borderline below. The system
+prompt frames the model as a forensics assistant for a non-expert, says the image is unavailable, and asks for
+cautious language and more hedging at borderline confidence. For a REAL verdict the artifact is `none` and the explanation says which regions the
 classifier relied on. Because the labels come from fixed lists, every claim can be checked against the heatmap
 automatically (phase 5).
 
@@ -124,10 +184,13 @@ Each answer records whether it is valid (`schema_ok`: JSON with allowed labels),
 latency and the raw reply. Phase 4 adds retrieved evidence cards and the instruction to cite them; the evidence
 summary, labels and output schema stay the same.
 
-### Pilot results (notebook 05)
-48 pilot images (24 FF++, 24 Celeb-DF; one frame per test video), explained by each model with reasoning effort
-*low*. The detector got 39 of the 48 right (7 of the 9 errors are on Celeb-DF, 4 at high confidence); the
-explanations describe its verdict, right or wrong.
+### Development-set results (notebook 05)
+The 48-image development set: one frame from each of 48 test videos — 24 FF++ (4 real, 4 per manipulation method)
+and 24 Celeb-DF (12 real, 12 fake). It guided the construction of the explanation step (output limits, citation
+parsing, when to request a revision), so its results are provisional. Each model runs on Groq at temperature 0
+with reasoning effort *low*. The detector got 39 of the 48 right (7 of the 9 errors are on Celeb-DF, 4 at high
+confidence); the explanations describe its verdict, right or wrong, so scoring uses the detector's own evidence,
+not the ground truth (method consistency is the one exception).
 
 | | GPT-OSS-120B | GPT-OSS-20B | Qwen3.8-27B |
 |---|---|---|---|
@@ -137,8 +200,8 @@ explanations describe its verdict, right or wrong.
 | Region IoU (mean) | 0.19 | 0.21 | 0.20 |
 | Artifact plausible for the regions | 94% | 96% | 88% |
 | Verdict consistent | 100% | 100% | 98% |
-| Mentions uncertainty on borderline verdicts | 1 of 5 | 0 of 5 | 5 of 5 |
-| Describes the image as if seen (unhedged) | 0% | 4% | 19% |
+| Hedges (moderate/borderline verdicts) | 5 of 8 | 1 of 8 | 7 of 8 |
+| Describes the image as if seen | 0% | 4% | 10% |
 | GAN-fingerprint claims (fake verdicts) | 0 of 31 | 2 of 31 | 8 of 30 |
 | Seconds per explanation | 0.8 | 0.8 | 26 |
 
@@ -147,12 +210,14 @@ explanations describe its verdict, right or wrong.
   artefacts for 21 of 31 fakes.
 - **The easy checks are nearly saturated.** Region-in-top-3, verdict consistency and artifact plausibility are
   close to 100% because the prompt lists the regions and most artefact types fit a central-face heatmap.
-  Pointing hit and IoU mostly reflect how often a model names the large mouth region; they need trivial baselines
-  (e.g. "always name the top region") before they say anything about the LLM.
-- **Qwen invents visual detail** ("natural skin texture… consistent tooth alignment") and claims GAN fingerprints
-  on face swaps and re-enactments, which the corpus describes as a cue for fully synthetic faces. It is also the
-  only model that hedges on borderline verdicts. One FF++ NeuralTextures image gets an empty reply from Qwen in
-  both runs (reasoning uses up the output limit).
+  Pointing hit and IoU mostly reflect how often a model names the mouth region, whose box is roughly twice the
+  nose box (mouth claims hit the hottest pixel 70–88% of the time, nose claims 38–53%); they need trivial
+  baselines (e.g. "always name the top region") before they say anything about the LLM.
+- **Qwen behaves unlike the GPT-OSS pair.** It hedges most often (7 of 8 moderate or borderline verdicts), yet one
+  in ten of its answers describes the image as if it were visible ("natural skin texture", "consistent tooth
+  alignment"), and it claims GAN fingerprints for 8 of its 30 fake verdicts, a cue that applies only to fully
+  synthetic faces, none of which are in the test set. One FF++ NeuralTextures image gets an empty reply from Qwen
+  (reasoning uses up the output limit).
 - **Runs are not exactly repeatable.** Two runs with the same settings (temperature 0) differed by up to 6 points
   on some rates, so differences of that size between conditions are within run-to-run noise.
 
@@ -175,7 +240,11 @@ label it is about, its kind, the facial regions and pattern (central/outer) it a
 families it concerns, and its source. Kinds: *artifact* (where an artefact appears; supports that label for its
 regions), *scope* (when an artefact does not apply, e.g. GAN fingerprints are a cue for fully synthetic images,
 not face swaps), *limitation* (what the evidence cannot show, e.g. Grad-CAM shows where, not why) and *authentic*
-(evidence for a REAL verdict). The labels are the same ten as in phase 3, so phase 3's prompt is unchanged; the
+(evidence for a REAL verdict). The corpus has 19 artifact, 6 scope, 6 limitation and 4 authentic cards. Every
+source is a published paper except one card that documents our own detector. The nine artefact labels are
+background and hair artefacts, blending boundary, compression artefacts, eye inconsistency, lighting
+inconsistency, spatial warping, spectral GAN fingerprint, teeth and mouth artefacts, and texture smoothing. The
+labels (plus `none`) are the same as in phase 3, so phase 3's prompt is unchanged; the
 taxonomy (regions per label) is now the union of each label's artifact cards, which removes `nose` from the GAN
 fingerprint label and leaves the others as before. The card format is described in `src/explain/corpus.py`.
 Every card is marked `checked: no` until its claim has been compared with the cited paper.
@@ -193,7 +262,11 @@ hairline and forehead → `forehead / hairline`, chin and jawlines → `chin / j
    BM25 keyword match, and cosine similarity of `BAAI/bge-small-en-v1.5` embeddings (run locally with
    `transformers`; the 35 card embeddings are computed once and kept in memory, no vector database).
 3. *Diversify*: the best card of each of 3 artefact types plus their scope cards (REAL: the best 2 authentic
-   cards), then one limitation card (`lim-generalisation` for moderate or borderline confidence).
+   cards), then one limitation card (`lim-generalisation` for moderate or borderline confidence). FAKE verdicts
+   get 4–7 cards (5 or 6 on the development set), REAL verdicts 3.
+
+Under grounding the cards are the LLM's only forensic knowledge: an artefact may be chosen only through an artifact
+card that lists the claimed region, scope and limitation cards must be obeyed, and every card used must be cited.
 
 The query is filled from the evidence by a fixed template, so retrieval is deterministic. Notebook 06 compares
 the rankers alone and combined, and a plain top-3 without the filter and diversity.
@@ -203,43 +276,55 @@ artefact supported by a cited artifact card, region listed on it), the heatmap c
 sentence-level NLI with `cross-encoder/nli-deberta-v3-base`: each sentence must be entailed by the evidence summary
 plus the cited cards. NLI measures attribution, not truth: a correct statement from the model's own knowledge
 counts as unsupported, and hedged interpretations are often judged neutral (on phase 3's answers it marks only
-13–29% of sentences as supported). The verified condition therefore requests a revision on failed deterministic
+13–29% of sentences as supported). The verified condition therefore requests one revision on failed deterministic
 checks and on *contradicted* sentences; adding `"neutral"` to `REVISE_ON` makes it stricter. Before quoting NLI
 rates, label the exported sentence sample by hand and compare.
+
+The three conditions share the model, decoding parameters, prompt, schema and labels; the only difference is the
+grounding block (cards plus the card instructions appended to the system prompt).
 
 Notebook 06 also scores phase 3's answers with the same checks (with the new taxonomy) and reports agreement
 between models on the artefact type (Fleiss' κ), **method consistency** (the claimed artefact is documented for
 the image's true manipulation family, which the LLM never sees) and the rate of GAN-fingerprint claims.
 
-### Pilot results (notebook 06)
-The same 48 pilot images as phase 3, re-scored with citation ids normalised. GPT-OSS figures are from a complete
-run; Qwen's grounded answers come from a run with a 900-token output limit, which cut off 17 of its 48 replies
-(later runs use 1,000 tokens).
+### Development-set results (notebook 06)
+The same 48 development images as phase 3. GPT-OSS outputs are capped at 1,024 tokens; Qwen at 900 tokens
+(ungrounded) and 1,000 tokens (grounded), the most Groq's per-minute output limit allows for it. Even so, 9 of
+Qwen's 48 grounded replies hit the cap and came back truncated (6) or empty (3).
 
 | | GPT-OSS-120B | GPT-OSS-20B | Qwen3.8-27B |
 |---|---|---|---|
-| Supported sentences (NLI), ungrounded → grounded | 0.29 → **0.45** | 0.14 → **0.25** | 0.13 → **0.47** |
+| Supported sentences (NLI), ungrounded → grounded | 0.29 → **0.47** | 0.14 → **0.35** | 0.13 → **0.45** |
 | Contradicted sentences | 0.04 → **0** | 0.05 → **0** | 0.03 → **0** |
 | GAN-fingerprint claims (fake verdicts) | 0 → 0 | 0.06 → **0** | 0.27 → **0** |
 | Artefact plausible for the regions | 0.94 → **1.00** | 0.92 → **1.00** | 0.75 → **1.00** |
-| Artefact backed by a cited card (grounded) | 100% | 100% | 100% |
-| Method consistent | 0.89 → 0.85 | 0.82 → 0.70 | 0.65 → 0.92 |
-| Valid output, grounded → verified | 100% → 100% | 100% → 100% | 65% → 81% |
+| Artefact backed by a cited card (grounded) | 1.00 | 1.00 | 1.00 |
+| Method consistent | 0.89 → 0.89 | 0.82 → 0.74 | 0.65 → 0.75 |
+| Valid output, grounded → verified | 1.00 → 1.00 | 1.00 → 1.00 | 0.81 → 0.94 |
 
-- **Grounding makes explanations traceable.** Every model writes more sentences supported by the evidence and
-  the cited cards, and none contradicts them. On these images the supported-share gain is significant for all
-  three models (paired Wilcoxon, Holm-corrected p ≤ 0.02).
-- **Scope cards work.** Qwen's GAN-fingerprint claims on face swaps disappear.
-- **The verifier is a safety net, not a crutch.** No GPT-OSS answer failed a check, so verified equals grounded
-  for them; for Qwen the revision request recovers about half of the invalid replies (17 → 9).
-- **Method consistency is mixed.** It rises sharply for Qwen but falls slightly for GPT-OSS (GPT-OSS-20B names
-  teeth/mouth artefacts for most fakes); the held-out test (phase 5) decides whether this is noise.
+Plausibility differs a little from the phase 3 table because the ungrounded answers are rescored with the corpus
+taxonomy.
+
+- **Grounding makes explanations traceable.** Paired mean gains in supported share are +0.18, +0.21 and +0.31
+  (95% bootstrap intervals [0.10, 0.26], [0.14, 0.27], [0.22, 0.39]), all significant (Wilcoxon signed-rank, Holm
+  over the 12 primary tests; p = 0.003, < 0.001, < 0.001). No grounded answer has a contradicted sentence; that
+  drop is significant before correction for both GPT-OSS models (p = 0.016) but not after, and not for Qwen.
+- **Scope cards work.** Qwen's GAN-fingerprint claims fall from 27% of its fake verdicts to none, because the
+  scope card confines that label to fully synthetic faces.
+- **The verifier is a safety net, not a corrective.** No GPT-OSS answer failed a check, so verified equals
+  grounded for them; for Qwen, revisions cut invalid replies from nine to three (the three blank ones).
+- **Method consistency is mixed** (up for Qwen, flat for GPT-OSS-120B, down for GPT-OSS-20B, which blames teeth or
+  mouth for 22 of 31 fakes), and the models still do not converge on the artefact (Fleiss' κ = 0.20 over the 22
+  fakes every model explained). No change in method consistency or GAN-fingerprint claims survives correction.
+- **Run-to-run noise.** An earlier run with Qwen capped at 900 tokens gave supported shares of 0.45, 0.25 and 0.47
+  with the same behaviour on GAN claims and contradictions; differences of about 0.09 between runs are noise.
 
 ## Evaluation (phase 5)
-Notebook 07 runs the frozen phase 3 and phase 4 pipeline on a **held-out test sample**. The pilot was used for
-tuning (output limits, citation parsing, when to revise), so its numbers are not reported as results.
-- **Sample:** one frame per test video from videos the pilot and worked examples did not use, balanced by
-  manipulation method. The default is 48 per dataset, 96 images in total.
+Notebook 07 runs the frozen phase 3 and phase 4 pipeline on a **held-out test sample** (the "held-out test that
+follows" in the paper). The development set was used for tuning (output limits, citation parsing, when to revise),
+so its numbers are provisional.
+- **Sample:** one frame per test video from videos the development set and worked examples did not use, balanced
+  by manipulation method. The default is 48 per dataset, 96 images in total.
 - **Conditions:** every image is explained by all three models in all three conditions (ungrounded, grounded,
   verified), so every comparison is paired by image.
 - **Runtime:** the sample runs in 3 daily batches of about 140K Groq tokens per model.
@@ -258,7 +343,7 @@ tuning (output limits, citation parsing, when to revise), so its numbers are not
 **Baselines** use no LLM and are scored with the same checks:
 - *top region + first card*: the heatmap's top region and the retriever's best artefact card, i.e. the evidence
   pipeline alone
-- *always mouth*: the most common pilot answer
+- *always mouth*: the most common development-set answer
 - *random plausible*: the exact expected score of a random top-3 region with an artefact that fits it
 
 They show whether a rate means anything, for example whether the LLM points better than simply naming the top
@@ -276,11 +361,11 @@ region.
 - **NLI check:** a stratified sentence sample is exported for checking the NLI model by hand, and any labelled
   sample is compared with it (agreement, Cohen's κ).
 
-**What the pilot suggests about power.** On the 48 pilot images, the same primary tests are significant for
-`supported_share` in all three models (+0.16, +0.11 and +0.32, Holm p ≤ 0.02). The fall in contradicted
-sentences (−0.04 to −0.05) is significant before the correction (p = 0.016) but not after it. The changes in
-`method_consistent` and `gan_claim` are too small or too rare to test at this size. The test set is twice the
-pilot.
+**What the development set suggests about power.** On the 48 development images, the same primary tests are
+significant for `supported_share` in all three models (+0.18, +0.21 and +0.31, Holm p ≤ 0.003). The fall in
+contradicted sentences (−0.03 to −0.05) is significant before the correction for the GPT-OSS models (p = 0.016) but
+not after it. The changes in `method_consistent` and `gan_claim` do not survive correction at this size. The test
+set is twice the development set.
 
 `python -m src.eval.run_eval --n 50` is an older quick check (one model, ungrounded vs. grounded, heatmap and
 hallucination flags only).
@@ -330,18 +415,33 @@ The gallery (`outputs/demo/gallery/`) is built on Kaggle by notebook 08, or loca
 `python -m src.demo.pipeline --data FF++=<face crops> CelebDF=<face crops>`.
 
 ## Limitations
-- **The detector's generalisation.** The FF++-trained models key partly on blur and low resolution: a mild
-  Gaussian blur (radius 1.5) turns a real photo from P(fake) ≈ 0 into ≈ 1 for six of the seven models (all but
-  MesoNet-4), while sharp AI-generated or AI-edited portraits score as REAL (P(fake) below 0.3 in our tests). Fully
-  AI-generated faces are out of scope (the training data has only face swaps and re-enactments), and Celeb-DF
-  accuracy is lower than FF++. Blur/resize augmentation, diffusion-generated
-  fakes in training, calibration and an out-of-distribution warning are the natural next steps.
-- **Heatmaps look alike.** Grad-CAM++ maps are similar across images (a central blob), so REAL verdicts tend to
-  retrieve the same cards.
-- **What the checks measure.** NLI measures attribution, not truth; the language checks are keyword-based; the
-  35 cards are marked `checked: no` until compared with their papers.
-- **Sample size and noise.** The pilot has 48 images and identical runs differed by up to 6 points; the phase 5
-  test set (96 images) is the basis for conclusions.
+- **Development set and sample size.** Tuning used the same 48 images, and repeat runs moved some ungrounded
+  rates by up to 6 points and GPT-OSS-20B's grounded supported share by 9 points, so all explanation figures are
+  provisional; the phase 5 test set (96 images) is the basis for conclusions.
+- **Premise length.** With grounding, the cited cards are part of the NLI premise; without it, the premise is the
+  evidence summary alone. Part of the rise in supported sentences may come from the longer premise rather than
+  the cards' content; a length-matched placebo condition would settle this. NLI also measures attribution, not
+  truth.
+- **Detector shortcuts.** The FF++-trained models key partly on blur and low resolution: a mild Gaussian blur
+  (radius 1.5) turns a real photo from P(fake) ≈ 0 into ≈ 1 for six of the seven models (all but MesoNet-4), while
+  sharp AI-generated or AI-edited portraits stay below 0.3. EfficientNet-B0's threshold crept from 0.57 to 0.98
+  over eight epochs (the stored checkpoint uses τ = 0.981), so every missed fake on the development set scored
+  0.83–0.97, high but short of τ. Fully synthetic faces never appear in the training data. A faithful explanation
+  of such a detector describes its shortcut; the detector's quality bounds what an explanation is worth.
+- **Heatmaps look alike, so retrieval barely varies.** Grad-CAM++ maps tend to form one central blob: the nose or
+  the mouth topped 45 of the 48 images, 14 of 17 REAL verdicts received the same pair of authentic cards, and only
+  five card sets occurred across the 31 FAKE verdicts.
+- **Other limits.** One training run per detector, so intervals reflect test sampling only, not seed variation.
+  The language checks are keyword-based, and the 35 cards are marked `checked: no` until compared with their
+  papers. By design the LLM cannot confirm any visual detail; its explanations support a human reviewer and are
+  not forensic proof.
+
+## Future work
+- The held-out test on 96 fresh images with the twelve pre-declared primary tests, Holm correction and no-LLM
+  baselines (phase 5).
+- A length-matched placebo condition; a detector retrained without the blur shortcut and with a calibrated
+  real/fake/uncertain verdict; comparison with the human artefact annotations in ExDDV; tests on
+  the diffusion-generated faces of DF40; and a user study of whether people rightly overrule an incorrect verdict.
 
 ## Running on Kaggle
 The notebooks run the whole project in order: face extraction (01, 01b), training and evaluation (02, 03),
@@ -360,7 +460,7 @@ then **Add Input → Your Work → Notebooks**).
 | `03_evaluate` | 01, 01b, 02 (+ copies of 02) | GPU T4 | comparison tables, significance tests, figures |
 | `04_gradcam` | 01, 01b, 02 (+ copies of 02) | GPU T4 | heatmap gallery, deletion/insertion faithfulness, region attribution |
 | `04b_model_selection` | 03, 04 (committed outputs) | None | accuracy vs. explainability charts, pre-declared scorecard to pick the main model |
-| `05_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0); secret `GROQ_API_KEY` | GPU T4 (detector only) | evidence summaries + ungrounded explanations from GPT-OSS-120B, GPT-OSS-20B and Qwen3.8-27B (Groq free tier), with prompts and raw replies; worked examples and pilot consistency rates |
+| `05_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0); secret `GROQ_API_KEY` | GPU T4 (detector only) | evidence summaries + ungrounded explanations from GPT-OSS-120B, GPT-OSS-20B and Qwen3.8-27B (Groq free tier), with prompts and raw replies; worked examples and development-set consistency rates |
 | `06_grounded_explanations` | 01, 01b, 02 (the copy with EfficientNet-B0), 05 (committed output); secret `GROQ_API_KEY` | GPU T4 (detector, embeddings, NLI) | retriever comparison; grounded and verified explanations from the same three models on the same images; all three conditions scored with the same checks; model agreement; a sentence sample for checking the NLI model by hand. One run uses up to ~180K Groq tokens per model, so run each model at most once per day (`RUN_TAG`); `RUN_MODELS` re-runs only some models and loads the others from an attached earlier output. Qwen gets a 1,000-token output limit and 60 s spacing (Groq caps it at 1K output tokens per minute) |
 | `07_evaluation` | 01, 01b, 02 (the copy with EfficientNet-B0), 05 (committed output); from batch 1 on the previous output of 07; secret `GROQ_API_KEY` | GPU T4 (detector, embeddings, NLI) | held-out test sample (96 images) explained by the three models in all three conditions, run as `BATCH` 0, 1, 2 on separate days (each run carries the earlier batches forward); per-answer scores, no-LLM baselines, paired tests with bootstrap intervals and Holm correction, model agreement, breakdowns, a forest plot and an NLI check sample. `BATCH = None` re-runs only the analysis |
 | `08_demo` | 01, 01b, 02 (the copy with EfficientNet-B0); secret `GROQ_API_KEY` | GPU T4 | the offline gallery (one correctly classified test image per manipulation method and dataset plus up to two the detector gets wrong, each explained by all three models), then the demo app with a temporary public link. Download `outputs/demo/gallery/` to run the demo on your own computer |
